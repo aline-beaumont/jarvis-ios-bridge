@@ -38,5 +38,3 @@ targets:
       path: JarvisBridge/JarvisBridge.entitlements
       properties:
         com.apple.developer.healthkit: true
-        com.apple.developer.healthkit.access:
-          - health-records
