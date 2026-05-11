@@ -15,7 +15,7 @@ class AudioRecordingService: NSObject {
     private let sampleRate: Double = 16000
     private let silenceThreshold: Float = 0.01
     private var silenceFrameCount = 0
-    private let maxSilenceFrames = 50 // ~1.6s of silence at 16kHz with 512 buffer
+    private let maxSilenceFrames = 30 // ~1s of silence at 16kHz with 512 buffer
 
     var recording: Bool { isRecording }
 

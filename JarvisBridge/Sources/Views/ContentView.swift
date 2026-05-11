@@ -110,13 +110,23 @@ struct StatusBadge: View {
 
 struct JarvisOrbView: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var bridgeManager: JarvisBridgeManager
 
-    var orbColor: Color {
+    private var glowColor: Color {
         switch appState.listeningState {
-        case .idle: return .gray
-        case .waitingForWakeWord: return .blue
-        case .recording: return .red
-        case .processing: return .orange
+        case .idle: return Color(red: 0.0, green: 0.6, blue: 0.7).opacity(0.4)
+        case .waitingForWakeWord: return Color(red: 0.0, green: 0.85, blue: 0.85)
+        case .recording: return Color(red: 0.0, green: 1.0, blue: 0.9)
+        case .processing: return Color(red: 0.0, green: 0.7, blue: 0.8)
+        }
+    }
+
+    private var glowIntensity: CGFloat {
+        switch appState.listeningState {
+        case .idle: return 4
+        case .waitingForWakeWord: return 10
+        case .recording: return 20
+        case .processing: return 12
         }
     }
 
@@ -124,7 +134,7 @@ struct JarvisOrbView: View {
         switch appState.listeningState {
         case .idle: return "Tap Start to begin"
         case .waitingForWakeWord: return "Listening for \"JARVIS\"..."
-        case .recording: return "Recording..."
+        case .recording: return "Tap to send"
         case .processing: return "Processing..."
         }
     }
@@ -133,29 +143,60 @@ struct JarvisOrbView: View {
         VStack(spacing: 16) {
             ZStack {
                 Circle()
-                    .fill(orbColor.opacity(0.15))
-                    .frame(width: 180, height: 180)
+                    .fill(Color.black)
+                    .frame(width: 200, height: 200)
 
                 Circle()
-                    .fill(orbColor.opacity(0.3))
-                    .frame(width: 130, height: 130)
+                    .stroke(glowColor.opacity(0.3), lineWidth: 2)
+                    .frame(width: 190, height: 190)
+                    .shadow(color: glowColor, radius: glowIntensity)
 
                 Circle()
-                    .fill(orbColor)
-                    .frame(width: 80, height: 80)
-                    .shadow(color: orbColor, radius: appState.isWakeWordDetected ? 25 : 8)
-                    .scaleEffect(appState.listeningState == .recording ? 1.15 : 1.0)
-                    .animation(
-                        appState.listeningState == .recording
-                            ? .easeInOut(duration: 0.6).repeatForever(autoreverses: true)
-                            : .default,
-                        value: appState.listeningState
-                    )
+                    .stroke(glowColor.opacity(0.6), lineWidth: 3)
+                    .frame(width: 160, height: 160)
+                    .shadow(color: glowColor, radius: glowIntensity)
+
+                Circle()
+                    .stroke(glowColor.opacity(0.8), lineWidth: 2)
+                    .frame(width: 120, height: 120)
+                    .shadow(color: glowColor, radius: glowIntensity * 0.8)
+
+                Circle()
+                    .fill(glowColor.opacity(0.15))
+                    .frame(width: 70, height: 70)
+                    .shadow(color: glowColor, radius: glowIntensity * 0.5)
+
+                Circle()
+                    .stroke(glowColor, lineWidth: 1.5)
+                    .frame(width: 70, height: 70)
+                    .shadow(color: glowColor, radius: glowIntensity * 0.5)
+
+                Text("JARVIS")
+                    .font(.system(size: 18, weight: .bold, design: .monospaced))
+                    .foregroundColor(glowColor)
+                    .shadow(color: glowColor, radius: 6)
+
+                if appState.listeningState == .recording {
+                    Circle()
+                        .stroke(glowColor.opacity(0.4), lineWidth: 1)
+                        .frame(width: 200, height: 200)
+                        .scaleEffect(1.1)
+                        .opacity(0.6)
+                        .animation(
+                            .easeInOut(duration: 1.0).repeatForever(autoreverses: true),
+                            value: appState.listeningState
+                        )
+                }
+            }
+            .onTapGesture {
+                if appState.listeningState == .recording {
+                    bridgeManager.finishRecording()
+                }
             }
 
             Text(stateText)
                 .font(.subheadline)
-                .foregroundColor(.secondary)
+                .foregroundColor(glowColor.opacity(0.8))
         }
     }
 }

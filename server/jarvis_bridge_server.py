@@ -55,6 +55,10 @@ class AudioSession:
         self.wake_word_detected = False
 
 
+# Global persistent session — survives reconnections
+_global_session = AudioSession()
+
+
 def pcm_to_wav(pcm_data: bytes, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2) -> bytes:
     """Convert raw PCM bytes to WAV format."""
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -123,7 +127,7 @@ async def get_jarvis_response(transcript: str, conversation_history: list, healt
                 "content-type": "application/json",
             },
             json={
-                "model": "claude-sonnet-4-6-20250514",
+                "model": "claude-sonnet-4-20250514",
                 "max_tokens": 300,
                 "system": SYSTEM_PROMPT,
                 "messages": conversation_history,
@@ -298,9 +302,10 @@ async def handle_client(websocket):
 
 
 async def websocket_handler(request):
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(heartbeat=20.0, autoping=True)
     await ws.prepare(request)
-    session = AudioSession()
+    session = _global_session
+    session.reset_audio()
     logger.info(f"Client connected via aiohttp: {request.remote}")
     try:
         async for msg in ws:
@@ -321,13 +326,13 @@ async def websocket_handler(request):
                 elif msg_type == "end_of_speech":
                     session.is_recording = False
                     logger.info("End of speech, processing...")
-                    transcript, tts_audio = await process_audio(session)
-                    resp: dict = {"type": "response", "transcript": transcript}
+                    response_text, tts_audio = await process_audio(session)
+                    resp: dict = {"type": "response", "transcript": response_text}
                     if tts_audio:
                         resp["audio"] = base64.b64encode(tts_audio).decode()
                         resp["format"] = "wav" if tts_audio[:4] == b"RIFF" else "mp3"
                     await ws.send_str(json.dumps(resp))
-                    session.audio_buffer = bytearray()
+                    session.reset_audio()
                 elif msg_type == "health_data":
                     session.health_data = {k: v for k, v in cmd.items() if k != "type"}
                     logger.info(f"Health data updated: {list(session.health_data.keys())}")
@@ -336,6 +341,8 @@ async def websocket_handler(request):
                     session.audio_buffer = bytearray()
                 elif msg_type == "stop_recording":
                     session.is_recording = False
+                elif msg_type == "ping":
+                    await ws.send_str(json.dumps({"type": "pong"}))
             elif msg.type == web.WSMsgType.ERROR:
                 logger.error(f"WebSocket error: {ws.exception()}")
     except Exception as e:

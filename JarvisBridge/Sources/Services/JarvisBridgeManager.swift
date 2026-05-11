@@ -55,6 +55,10 @@ class JarvisBridgeManager: ObservableObject {
         return bluetooth.getDiscoveredDevices().map { ($0.name, $0.peripheral) }
     }
 
+    func finishRecording() {
+        audioRecording.stopRecording()
+    }
+
     // MARK: - Private
 
     private func setupDelegates() {
