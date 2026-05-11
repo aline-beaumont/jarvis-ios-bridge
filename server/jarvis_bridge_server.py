@@ -16,6 +16,7 @@ import wave
 from pathlib import Path
 
 import websockets
+from aiohttp import web
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("jarvis-bridge")
@@ -296,18 +297,73 @@ async def handle_client(websocket):
         logger.error(f"Error handling client: {e}", exc_info=True)
 
 
-async def main():
-    logger.info(f"JARVIS Bridge Server starting on ws://{HOST}:{PORT}")
+async def websocket_handler(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    session = AudioSession()
+    logger.info(f"Client connected via aiohttp: {request.remote}")
+    try:
+        async for msg in ws:
+            if msg.type == web.WSMsgType.BINARY:
+                if session.is_recording:
+                    session.audio_buffer.extend(msg.data)
+            elif msg.type == web.WSMsgType.TEXT:
+                try:
+                    cmd = json.loads(msg.data)
+                except json.JSONDecodeError:
+                    continue
+                msg_type = cmd.get("type")
+                if msg_type == "wake_word":
+                    session.wake_word_detected = True
+                    session.is_recording = True
+                    session.audio_buffer = bytearray()
+                    logger.info(f"Wake word detected: {cmd.get('keyword', 'unknown')}")
+                elif msg_type == "end_of_speech":
+                    session.is_recording = False
+                    logger.info("End of speech, processing...")
+                    transcript, tts_audio = await process_audio(session)
+                    resp: dict = {"type": "response", "transcript": transcript}
+                    if tts_audio:
+                        resp["audio"] = base64.b64encode(tts_audio).decode()
+                        resp["format"] = "wav" if tts_audio[:4] == b"RIFF" else "mp3"
+                    await ws.send_str(json.dumps(resp))
+                    session.audio_buffer = bytearray()
+                elif msg_type == "health_data":
+                    session.health_data = {k: v for k, v in cmd.items() if k != "type"}
+                    logger.info(f"Health data updated: {list(session.health_data.keys())}")
+                elif msg_type == "start_recording":
+                    session.is_recording = True
+                    session.audio_buffer = bytearray()
+                elif msg_type == "stop_recording":
+                    session.is_recording = False
+            elif msg.type == web.WSMsgType.ERROR:
+                logger.error(f"WebSocket error: {ws.exception()}")
+    except Exception as e:
+        logger.error(f"Error handling client: {e}", exc_info=True)
+    logger.info(f"Client disconnected: {request.remote}")
+    return ws
+
+
+async def health_handler(request):
+    return web.Response(text="JARVIS Bridge Server OK")
+
+
+def main():
+    logger.info(f"JARVIS Bridge Server starting on {HOST}:{PORT}")
     logger.info(f"Anthropic API: {'configured' if ANTHROPIC_API_KEY else 'NOT SET'}")
     logger.info(f"OpenAI API (fallback TTS/STT): {'configured' if OPENAI_API_KEY else 'NOT SET'}")
     piper_available = Path(PIPER_MODEL).exists()
     logger.info(f"Piper TTS (JARVIS voice): {'READY' if piper_available else 'NOT FOUND'}")
     if not piper_available:
         logger.warning(f"  Model path: {PIPER_MODEL}")
-    async with websockets.serve(handle_client, HOST, PORT):
-        logger.info("Server ready. Waiting for iOS bridge connection...")
-        await asyncio.Future()
+
+    app = web.Application()
+    app.router.add_get("/", health_handler)
+    app.router.add_get("/ws", websocket_handler)
+    app.router.add_get("/health", health_handler)
+    logger.info("Server ready. Waiting for iOS bridge connection...")
+    web.run_app(app, host=HOST, port=PORT, print=None)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
