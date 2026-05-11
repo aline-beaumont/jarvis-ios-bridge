@@ -2,30 +2,43 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
-    @StateObject private var bridgeManager: JarvisBridgeManager
-
-    init() {
-        let state = AppState()
-        _bridgeManager = StateObject(wrappedValue: JarvisBridgeManager(appState: state))
-    }
+    @EnvironmentObject var bridgeManager: JarvisBridgeManager
 
     var body: some View {
         NavigationView {
             VStack(spacing: 24) {
-                // Status Header
                 StatusHeaderView()
 
-                // JARVIS Orb
                 JarvisOrbView()
 
-                // Last Response
                 if !appState.lastResponse.isEmpty {
                     ResponseCard(text: appState.lastResponse)
                 }
 
                 Spacer()
 
-                // Settings Button
+                HStack(spacing: 20) {
+                    Button(action: { bridgeManager.start() }) {
+                        Label("Start", systemImage: "play.fill")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 12)
+                            .background(Color.blue)
+                            .cornerRadius(12)
+                    }
+
+                    Button(action: { bridgeManager.stop() }) {
+                        Label("Stop", systemImage: "stop.fill")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 12)
+                            .background(Color.red.opacity(0.8))
+                            .cornerRadius(12)
+                    }
+                }
+
                 NavigationLink(destination: SettingsView()) {
                     Label("Settings", systemImage: "gear")
                         .font(.headline)
@@ -34,12 +47,6 @@ struct ContentView: View {
             }
             .padding()
             .navigationTitle("J.A.R.V.I.S")
-            .onAppear {
-                bridgeManager.start()
-            }
-            .onDisappear {
-                bridgeManager.stop()
-            }
         }
     }
 }
@@ -111,7 +118,7 @@ struct JarvisOrbView: View {
 
     var stateText: String {
         switch appState.listeningState {
-        case .idle: return "Idle"
+        case .idle: return "Tap Start to begin"
         case .waitingForWakeWord: return "Listening for \"JARVIS\"..."
         case .recording: return "Recording..."
         case .processing: return "Processing..."
@@ -122,19 +129,24 @@ struct JarvisOrbView: View {
         VStack(spacing: 16) {
             ZStack {
                 Circle()
-                    .fill(orbColor.opacity(0.2))
-                    .frame(width: 160, height: 160)
+                    .fill(orbColor.opacity(0.15))
+                    .frame(width: 180, height: 180)
 
                 Circle()
-                    .fill(orbColor.opacity(0.4))
-                    .frame(width: 120, height: 120)
+                    .fill(orbColor.opacity(0.3))
+                    .frame(width: 130, height: 130)
 
                 Circle()
                     .fill(orbColor)
                     .frame(width: 80, height: 80)
-                    .shadow(color: orbColor, radius: appState.isWakeWordDetected ? 20 : 5)
-                    .scaleEffect(appState.listeningState == .recording ? 1.1 : 1.0)
-                    .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: appState.listeningState == .recording)
+                    .shadow(color: orbColor, radius: appState.isWakeWordDetected ? 25 : 8)
+                    .scaleEffect(appState.listeningState == .recording ? 1.15 : 1.0)
+                    .animation(
+                        appState.listeningState == .recording
+                            ? .easeInOut(duration: 0.6).repeatForever(autoreverses: true)
+                            : .default,
+                        value: appState.listeningState
+                    )
             }
 
             Text(stateText)
@@ -154,7 +166,7 @@ struct ResponseCard: View {
                 .foregroundColor(.blue)
             Text(text)
                 .font(.body)
-                .lineLimit(5)
+                .lineLimit(8)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)

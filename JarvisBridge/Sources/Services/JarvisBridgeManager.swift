@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 class JarvisBridgeManager: ObservableObject {
-    @Published var appState: AppState
+    private var appState: AppState?
 
     private let wakeWordService = WakeWordService()
     private let audioRecording = AudioRecordingService()
@@ -12,7 +12,7 @@ class JarvisBridgeManager: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
 
-    init(appState: AppState) {
+    func configure(with appState: AppState) {
         self.appState = appState
         setupDelegates()
     }
@@ -30,7 +30,7 @@ class JarvisBridgeManager: ObservableObject {
     }
 
     func connectToServer() {
-        guard let url = appState.serverURL else { return }
+        guard let appState = appState, let url = appState.serverURL else { return }
         appState.serverStatus = .connecting
         webSocket.connect(to: url)
     }
@@ -38,7 +38,7 @@ class JarvisBridgeManager: ObservableObject {
     func startWakeWordDetection() {
         do {
             try wakeWordService.startListening()
-            appState.listeningState = .waitingForWakeWord
+            appState?.listeningState = .waitingForWakeWord
         } catch {
             print("[Bridge] Wake word start failed: \(error)")
         }
@@ -46,6 +46,10 @@ class JarvisBridgeManager: ObservableObject {
 
     func scanForDevices() {
         bluetooth.startScanning()
+    }
+
+    func getDiscoveredDevices() -> [(name: String, peripheral: Any)] {
+        return bluetooth.getDiscoveredDevices().map { ($0.name, $0.peripheral) }
     }
 
     // MARK: - Private
@@ -64,10 +68,10 @@ class JarvisBridgeManager: ObservableObject {
     private func startRecording() {
         do {
             try audioRecording.startRecording()
-            appState.listeningState = .recording
+            appState?.listeningState = .recording
         } catch {
             print("[Bridge] Recording start failed: \(error)")
-            appState.listeningState = .waitingForWakeWord
+            appState?.listeningState = .waitingForWakeWord
         }
     }
 
@@ -79,15 +83,14 @@ class JarvisBridgeManager: ObservableObject {
 // MARK: - WakeWordServiceDelegate
 extension JarvisBridgeManager: WakeWordServiceDelegate {
     func wakeWordDetected() {
-        appState.isWakeWordDetected = true
-        appState.listeningState = .recording
+        appState?.isWakeWordDetected = true
+        appState?.listeningState = .recording
         wakeWordService.stopListening()
         webSocket.sendWakeWord()
         startRecording()
 
-        // Reset wake word indicator after brief delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            self?.appState.isWakeWordDetected = false
+            self?.appState?.isWakeWordDetected = false
         }
     }
 
@@ -103,7 +106,7 @@ extension JarvisBridgeManager: AudioRecordingDelegate {
     }
 
     func audioRecordingDidStop() {
-        appState.listeningState = .processing
+        appState?.listeningState = .processing
         webSocket.sendEndOfSpeech()
     }
 
@@ -115,16 +118,16 @@ extension JarvisBridgeManager: AudioRecordingDelegate {
 // MARK: - WebSocketServiceDelegate
 extension JarvisBridgeManager: WebSocketServiceDelegate {
     func webSocketDidConnect() {
-        appState.serverStatus = .connected
+        appState?.serverStatus = .connected
     }
 
     func webSocketDidDisconnect(error: Error?) {
-        appState.serverStatus = .disconnected
+        appState?.serverStatus = .disconnected
     }
 
     func webSocketDidReceiveText(_ text: String) {
-        appState.lastResponse = text
-        appState.listeningState = .idle
+        appState?.lastResponse = text
+        appState?.listeningState = .idle
     }
 
     func webSocketDidReceiveAudio(_ data: Data) {
@@ -135,22 +138,22 @@ extension JarvisBridgeManager: WebSocketServiceDelegate {
 // MARK: - BluetoothServiceDelegate
 extension JarvisBridgeManager: BluetoothServiceDelegate {
     func bluetoothDidConnect(deviceName: String) {
-        appState.bluetoothStatus = .connected
-        appState.connectedDeviceName = deviceName
+        appState?.bluetoothStatus = .connected
+        appState?.connectedDeviceName = deviceName
     }
 
     func bluetoothDidDisconnect() {
-        appState.bluetoothStatus = .disconnected
-        appState.connectedDeviceName = nil
+        appState?.bluetoothStatus = .disconnected
+        appState?.connectedDeviceName = nil
     }
 
     func bluetoothDidFail(error: Error) {
-        appState.bluetoothStatus = .error
+        appState?.bluetoothStatus = .error
     }
 
     func bluetoothStateChanged(available: Bool) {
         if !available {
-            appState.bluetoothStatus = .error
+            appState?.bluetoothStatus = .error
         }
     }
 }

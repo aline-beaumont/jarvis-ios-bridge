@@ -2,8 +2,10 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var bridgeManager: JarvisBridgeManager
     @State private var hostInput: String = ""
     @State private var portInput: String = ""
+    @State private var showingSaved = false
 
     var body: some View {
         Form {
@@ -21,8 +23,26 @@ struct SettingsView: View {
                     if let port = Int(portInput) {
                         appState.serverPort = port
                     }
+                    bridgeManager.connectToServer()
+                    showingSaved = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        showingSaved = false
+                    }
                 }
                 .disabled(hostInput.isEmpty)
+
+                if showingSaved {
+                    Text("Saved! Reconnecting...")
+                        .foregroundColor(.green)
+                        .font(.caption)
+                }
+
+                HStack {
+                    Text("Status")
+                    Spacer()
+                    Text(appState.serverStatus.rawValue)
+                        .foregroundColor(appState.serverStatus == .connected ? .green : .secondary)
+                }
             }
 
             Section(header: Text("Bluetooth")) {
@@ -34,7 +54,7 @@ struct SettingsView: View {
                 }
 
                 Button("Scan for Devices") {
-                    // Trigger scan from bridge manager
+                    bridgeManager.scanForDevices()
                 }
             }
 
@@ -51,6 +71,12 @@ struct SettingsView: View {
                     Text("PCM 16-bit")
                         .foregroundColor(.secondary)
                 }
+                HStack {
+                    Text("Silence Detection")
+                    Spacer()
+                    Text("~1.6s auto-stop")
+                        .foregroundColor(.secondary)
+                }
             }
 
             Section(header: Text("About")) {
@@ -64,6 +90,12 @@ struct SettingsView: View {
                     Text("Wake Word")
                     Spacer()
                     Text("JARVIS")
+                        .foregroundColor(.secondary)
+                }
+                HStack {
+                    Text("Wake Word Engine")
+                    Spacer()
+                    Text("Energy (placeholder)")
                         .foregroundColor(.secondary)
                 }
             }
