@@ -144,10 +144,17 @@ async def get_jarvis_response(transcript: str, conversation_history: list, healt
             return "I'm having trouble processing that, sir. Please try again."
 
 
+def _is_chinese(text: str) -> bool:
+    """Check if text contains CJK characters."""
+    return any('\u4e00' <= ch <= '\u9fff' for ch in text)
+
+
 async def generate_tts(text: str) -> bytes | None:
-    """Generate TTS audio using Piper with JARVIS voice model (local, fast)."""
+    """Generate TTS audio. Uses OpenAI for Chinese (Piper is English-only)."""
+    if _is_chinese(text):
+        return await _generate_tts_openai(text)
+
     if not Path(PIPER_MODEL).exists():
-        logger.error(f"Piper model not found: {PIPER_MODEL}")
         return await _generate_tts_openai(text)
 
     try:
@@ -160,7 +167,7 @@ async def generate_tts(text: str) -> bytes | None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(input=text.encode("utf-8")), timeout=15.0)
+        _, stderr = await asyncio.wait_for(proc.communicate(input=text.encode("utf-8")), timeout=10.0)
 
         if proc.returncode != 0:
             logger.error(f"Piper error: {stderr.decode()}")

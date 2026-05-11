@@ -75,7 +75,7 @@ class WebSocketService: NSObject {
         guard let url = url else { return }
 
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForRequest = 30
         session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
 
         webSocket = session?.webSocketTask(with: url)
