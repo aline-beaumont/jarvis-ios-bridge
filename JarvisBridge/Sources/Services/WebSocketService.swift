@@ -63,6 +63,12 @@ class WebSocketService: NSObject {
         sendCommand(["type": "end_of_speech"])
     }
 
+    func sendHealthData(_ summary: HealthSummary) {
+        var payload: [String: Any] = ["type": "health_data"]
+        payload.merge(summary.dictionary) { _, new in new }
+        sendCommand(payload)
+    }
+
     // MARK: - Private
 
     private func establishConnection() {

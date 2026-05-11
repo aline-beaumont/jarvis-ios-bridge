@@ -1,6 +1,7 @@
 """
 JARVIS Bridge Server - WebSocket endpoint for the iOS bridge app.
 Runs on Mac mini, receives audio from phone, processes via JARVIS brain, returns TTS.
+Uses Piper TTS with JARVIS voice model (Paul Bettany style).
 """
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import json
 import base64
 import logging
 import os
+import subprocess
 import tempfile
 import wave
 from pathlib import Path
@@ -24,11 +26,18 @@ PORT = int(os.environ.get("JARVIS_PORT", "8765"))
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
+PIPER_MODEL = os.environ.get(
+    "PIPER_MODEL",
+    str(Path.home() / ".cache/huggingface/hub/models--jgkawell--jarvis/snapshots/37f8763122312665f091d1fc760abaf1f79b02cc/en/en_GB/jarvis/high/jarvis-high.onnx")
+)
+PIPER_BIN = os.environ.get("PIPER_BIN", str(Path.home() / "Library/Python/3.9/bin/piper"))
+
 SYSTEM_PROMPT = """You are J.A.R.V.I.S., a highly capable AI assistant modeled after the AI from Iron Man.
 You serve Richard Wang, Founder & CEO of Aiper (a smart pool cleaning robotics company based in Singapore).
 You are concise, proactive, and witty. You address Richard as "sir" occasionally but not excessively.
 Keep responses short and conversational — this is a voice interface, not a text chat.
-Respond in the same language the user speaks (Chinese or English)."""
+Respond in the same language the user speaks (Chinese or English).
+You have access to Richard's real-time health data from Apple Watch. If health data is available in the context, you can reference it when relevant (e.g., if asked about vitals, or if you notice concerning readings). Don't mention health data unprompted unless something appears abnormal."""
 
 
 class AudioSession:
@@ -37,6 +46,7 @@ class AudioSession:
         self.is_recording = False
         self.wake_word_detected = False
         self.conversation_history = []
+        self.health_data: dict = {}
 
     def reset_audio(self):
         self.audio_buffer = bytearray()
@@ -84,7 +94,7 @@ async def transcribe_audio(pcm_data: bytes) -> str:
             return ""
 
 
-async def get_jarvis_response(transcript: str, conversation_history: list) -> str:
+async def get_jarvis_response(transcript: str, conversation_history: list, health_data: dict = None) -> str:
     """Get response from Claude (JARVIS brain)."""
     if not ANTHROPIC_API_KEY:
         logger.warning("No ANTHROPIC_API_KEY set, returning placeholder response")
@@ -92,7 +102,12 @@ async def get_jarvis_response(transcript: str, conversation_history: list) -> st
 
     import httpx
 
-    conversation_history.append({"role": "user", "content": transcript})
+    user_content = transcript
+    if health_data:
+        health_ctx = json.dumps(health_data, ensure_ascii=False)
+        user_content = f"{transcript}\n\n[Current health data: {health_ctx}]"
+
+    conversation_history.append({"role": "user", "content": user_content})
 
     # Keep conversation history manageable
     if len(conversation_history) > 20:
@@ -125,8 +140,45 @@ async def get_jarvis_response(transcript: str, conversation_history: list) -> st
 
 
 async def generate_tts(text: str) -> bytes | None:
-    """Generate TTS audio using OpenAI TTS API."""
+    """Generate TTS audio using Piper with JARVIS voice model (local, fast)."""
+    if not Path(PIPER_MODEL).exists():
+        logger.error(f"Piper model not found: {PIPER_MODEL}")
+        return await _generate_tts_openai(text)
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            output_path = f.name
+
+        proc = await asyncio.create_subprocess_exec(
+            PIPER_BIN, "--model", PIPER_MODEL, "--output_file", output_path,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(input=text.encode("utf-8")), timeout=15.0)
+
+        if proc.returncode != 0:
+            logger.error(f"Piper error: {stderr.decode()}")
+            os.unlink(output_path)
+            return await _generate_tts_openai(text)
+
+        wav_data = Path(output_path).read_bytes()
+        os.unlink(output_path)
+        logger.info(f"Piper TTS generated {len(wav_data)} bytes for: {text[:50]}")
+        return wav_data
+
+    except asyncio.TimeoutError:
+        logger.error("Piper TTS timed out")
+        return await _generate_tts_openai(text)
+    except Exception as e:
+        logger.error(f"Piper TTS exception: {e}")
+        return await _generate_tts_openai(text)
+
+
+async def _generate_tts_openai(text: str) -> bytes | None:
+    """Fallback: Generate TTS audio using OpenAI TTS API."""
     if not OPENAI_API_KEY:
+        logger.warning("No OPENAI_API_KEY and Piper unavailable — no TTS output")
         return None
 
     import httpx
@@ -149,7 +201,7 @@ async def generate_tts(text: str) -> bytes | None:
         if response.status_code == 200:
             return response.content
         else:
-            logger.error(f"TTS API error: {response.status_code} {response.text}")
+            logger.error(f"OpenAI TTS API error: {response.status_code} {response.text}")
             return None
 
 
@@ -168,11 +220,13 @@ async def process_audio(session: AudioSession) -> tuple[str, bytes | None]:
 
     logger.info(f"Transcript: {transcript}")
 
-    # Step 2: Get JARVIS response
-    response_text = await get_jarvis_response(transcript, session.conversation_history)
+    # Step 2: Get JARVIS response (with health context if available)
+    response_text = await get_jarvis_response(
+        transcript, session.conversation_history, session.health_data or None
+    )
     logger.info(f"Response: {response_text}")
 
-    # Step 3: Generate TTS
+    # Step 3: Generate TTS (Piper JARVIS voice, with OpenAI fallback)
     tts_audio = await generate_tts(response_text)
 
     return response_text, tts_audio
@@ -217,13 +271,18 @@ async def handle_client(websocket):
                     }))
 
                     if tts_audio:
+                        audio_format = "wav" if tts_audio[:4] == b"RIFF" else "mp3"
                         await websocket.send(json.dumps({
                             "type": "tts_audio",
                             "audio": base64.b64encode(tts_audio).decode("utf-8"),
-                            "format": "mp3"
+                            "format": audio_format
                         }))
 
                     session.reset_audio()
+
+                elif msg_type == "health_data":
+                    session.health_data = {k: v for k, v in cmd.items() if k != "type"}
+                    logger.info(f"Health data updated: {session.health_data}")
 
                 elif msg_type == "ping":
                     await websocket.send(json.dumps({"type": "pong"}))
@@ -240,7 +299,11 @@ async def handle_client(websocket):
 async def main():
     logger.info(f"JARVIS Bridge Server starting on ws://{HOST}:{PORT}")
     logger.info(f"Anthropic API: {'configured' if ANTHROPIC_API_KEY else 'NOT SET'}")
-    logger.info(f"OpenAI API: {'configured' if OPENAI_API_KEY else 'NOT SET'}")
+    logger.info(f"OpenAI API (fallback TTS/STT): {'configured' if OPENAI_API_KEY else 'NOT SET'}")
+    piper_available = Path(PIPER_MODEL).exists()
+    logger.info(f"Piper TTS (JARVIS voice): {'READY' if piper_available else 'NOT FOUND'}")
+    if not piper_available:
+        logger.warning(f"  Model path: {PIPER_MODEL}")
     async with websockets.serve(handle_client, HOST, PORT):
         logger.info("Server ready. Waiting for iOS bridge connection...")
         await asyncio.Future()

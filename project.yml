@@ -30,6 +30,13 @@ targets:
         NSBluetoothAlwaysUsageDescription: JARVIS needs Bluetooth to connect to your smart glasses for audio input and output.
         NSBluetoothPeripheralUsageDescription: JARVIS needs Bluetooth to connect to your smart glasses.
         NSLocalNetworkUsageDescription: JARVIS needs local network access to communicate with the Mac mini server.
+        NSHealthShareUsageDescription: JARVIS reads your health data (heart rate, blood oxygen, steps, sleep, HRV) from Apple Watch to provide personalized insights.
         UIBackgroundModes:
           - audio
           - bluetooth-central
+    entitlements:
+      path: JarvisBridge/JarvisBridge.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.access:
+          - health-records

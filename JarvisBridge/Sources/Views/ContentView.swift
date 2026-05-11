@@ -15,6 +15,10 @@ struct ContentView: View {
                     ResponseCard(text: appState.lastResponse)
                 }
 
+                if let health = appState.healthSummary {
+                    HealthCard(summary: health)
+                }
+
                 Spacer()
 
                 HStack(spacing: 20) {
@@ -172,5 +176,61 @@ struct ResponseCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.systemGray6))
         .cornerRadius(12)
+    }
+}
+
+struct HealthCard: View {
+    let summary: HealthSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Health", systemImage: "heart.fill")
+                .font(.caption)
+                .foregroundColor(.red)
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                if let hr = summary.heartRate {
+                    VitalBadge(icon: "heart.fill", value: "\(Int(hr))", unit: "bpm", color: .red)
+                }
+                if let spo2 = summary.bloodOxygen {
+                    VitalBadge(icon: "lungs.fill", value: "\(Int(spo2))", unit: "%", color: .blue)
+                }
+                if let steps = summary.steps {
+                    VitalBadge(icon: "figure.walk", value: "\(steps)", unit: "steps", color: .green)
+                }
+                if let hrv = summary.hrv {
+                    VitalBadge(icon: "waveform.path.ecg", value: "\(Int(hrv))", unit: "ms", color: .purple)
+                }
+                if let sleep = summary.sleepHours {
+                    VitalBadge(icon: "bed.double.fill", value: String(format: "%.1f", sleep), unit: "hrs", color: .indigo)
+                }
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+    }
+}
+
+struct VitalBadge: View {
+    let icon: String
+    let value: String
+    let unit: String
+    let color: Color
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .foregroundColor(color)
+                .font(.caption)
+            Text(value)
+                .font(.system(.callout, design: .rounded))
+                .fontWeight(.bold)
+            Text(unit)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .padding(.vertical, 6)
     }
 }

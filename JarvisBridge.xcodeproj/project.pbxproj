@@ -15,6 +15,7 @@
 		966BDEE52CD9BC69ACA5C976 /* JarvisBridgeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A4E494ED5CCD0FC71483975 /* JarvisBridgeManager.swift */; };
 		96A6E39772BABBD8DC3B3C8A /* AudioPlaybackService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA83948E5B18AA3F9FA50BA9 /* AudioPlaybackService.swift */; };
 		9870A22B78856C3A63241A92 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53ADE2C297D699B89EFEF63B /* ContentView.swift */; };
+		D4ED1CBE2E3DC680C975E731 /* HealthKitService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F144B22F319D69CF422A4E6 /* HealthKitService.swift */; };
 		F093EE1110AE2DA87D9BEF81 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 830AA46C316CABE6C8A55683 /* SettingsView.swift */; };
 		FF0D74B05C611338986423BD /* WakeWordService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 235B8EB67867341FBDA3D37C /* WakeWordService.swift */; };
 /* End PBXBuildFile section */
@@ -28,6 +29,7 @@
 		53ADE2C297D699B89EFEF63B /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		5A4E494ED5CCD0FC71483975 /* JarvisBridgeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisBridgeManager.swift; sourceTree = "<group>"; };
 		5C0D8C197CF79D84DE0D0436 /* WebSocketService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketService.swift; sourceTree = "<group>"; };
+		5F144B22F319D69CF422A4E6 /* HealthKitService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitService.swift; sourceTree = "<group>"; };
 		80BAEA1319851780924053BD /* JarvisBridge.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = JarvisBridge.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		830AA46C316CABE6C8A55683 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AA83948E5B18AA3F9FA50BA9 /* AudioPlaybackService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlaybackService.swift; sourceTree = "<group>"; };
@@ -48,6 +50,7 @@
 				AA83948E5B18AA3F9FA50BA9 /* AudioPlaybackService.swift */,
 				12D936136570E97AEA077A4F /* AudioRecordingService.swift */,
 				0D9BB514DCA4E0E2114E6A8D /* BluetoothService.swift */,
+				5F144B22F319D69CF422A4E6 /* HealthKitService.swift */,
 				5A4E494ED5CCD0FC71483975 /* JarvisBridgeManager.swift */,
 				235B8EB67867341FBDA3D37C /* WakeWordService.swift */,
 				5C0D8C197CF79D84DE0D0436 /* WebSocketService.swift */,
@@ -160,6 +163,7 @@
 				071253FDFDB33DEA791E627F /* AudioRecordingService.swift in Sources */,
 				4D6BC9FD143A7D3A541DD868 /* BluetoothService.swift in Sources */,
 				9870A22B78856C3A63241A92 /* ContentView.swift in Sources */,
+				D4ED1CBE2E3DC680C975E731 /* HealthKitService.swift in Sources */,
 				58017DCC3289D516C12BC448 /* JarvisBridgeApp.swift in Sources */,
 				966BDEE52CD9BC69ACA5C976 /* JarvisBridgeManager.swift in Sources */,
 				F093EE1110AE2DA87D9BEF81 /* SettingsView.swift in Sources */,
@@ -238,6 +242,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = JarvisBridge/JarvisBridge.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
 				INFOPLIST_FILE = JarvisBridge/Info.plist;
@@ -313,6 +318,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = JarvisBridge/JarvisBridge.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
 				INFOPLIST_FILE = JarvisBridge/Info.plist;

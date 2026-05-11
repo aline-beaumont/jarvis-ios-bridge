@@ -24,6 +24,10 @@ class AppState: ObservableObject {
     @Published var lastResponse: String = ""
     @Published var connectedDeviceName: String?
 
+    // HealthKit
+    @Published var healthSummary: HealthSummary?
+    @Published var isHealthKitAuthorized = false
+
     @Published var serverHost: String {
         didSet { UserDefaults.standard.set(serverHost, forKey: "jarvis_server_host") }
     }

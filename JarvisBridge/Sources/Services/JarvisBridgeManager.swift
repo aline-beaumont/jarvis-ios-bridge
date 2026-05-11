@@ -9,6 +9,7 @@ class JarvisBridgeManager: ObservableObject {
     private let webSocket = WebSocketService()
     private let audioPlayback = AudioPlaybackService()
     private let bluetooth = BluetoothService()
+    private let healthKit = HealthKitService()
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -20,6 +21,7 @@ class JarvisBridgeManager: ObservableObject {
     func start() {
         connectToServer()
         startWakeWordDetection()
+        healthKit.requestAuthorization()
     }
 
     func stop() {
@@ -27,6 +29,7 @@ class JarvisBridgeManager: ObservableObject {
         audioRecording.stopRecording()
         webSocket.disconnect()
         audioPlayback.stop()
+        healthKit.stopPeriodicUpdates()
     }
 
     func connectToServer() {
@@ -59,6 +62,7 @@ class JarvisBridgeManager: ObservableObject {
         audioRecording.delegate = self
         webSocket.delegate = self
         bluetooth.delegate = self
+        healthKit.delegate = self
 
         audioPlayback.onPlaybackComplete = { [weak self] in
             self?.onPlaybackFinished()
@@ -132,6 +136,19 @@ extension JarvisBridgeManager: WebSocketServiceDelegate {
 
     func webSocketDidReceiveAudio(_ data: Data) {
         audioPlayback.play(audioData: data)
+    }
+}
+
+// MARK: - HealthKitServiceDelegate
+extension JarvisBridgeManager: HealthKitServiceDelegate {
+    func healthKitDidUpdate(_ summary: HealthSummary) {
+        appState?.healthSummary = summary
+        appState?.isHealthKitAuthorized = true
+        webSocket.sendHealthData(summary)
+    }
+
+    func healthKitError(_ error: Error) {
+        print("[Bridge] HealthKit error: \(error)")
     }
 }
 

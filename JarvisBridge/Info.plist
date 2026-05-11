@@ -22,6 +22,8 @@
 	<string>JARVIS needs Bluetooth to connect to your smart glasses for audio input and output.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>JARVIS needs Bluetooth to connect to your smart glasses.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>JARVIS reads your health data (heart rate, blood oxygen, steps, sleep, HRV) from Apple Watch to provide personalized insights.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>JARVIS needs local network access to communicate with the Mac mini server.</string>
 	<key>NSMicrophoneUsageDescription</key>
