@@ -40,16 +40,27 @@ PIPER_BIN = os.environ.get("PIPER_BIN", str(Path.home() / "Library/Python/3.9/bi
 _KNOWLEDGE_FILE = Path(__file__).parent / "knowledge_base.md"
 _KNOWLEDGE = _KNOWLEDGE_FILE.read_text() if _KNOWLEDGE_FILE.exists() else ""
 
-SYSTEM_PROMPT = f"""You are J.A.R.V.I.S., a highly capable AI assistant modeled after the AI from Iron Man.
-You serve Richard Wang, Founder & CEO of Aiper. You know him deeply — his company, strategy, family, and goals.
-Communication style: 用"你"不用"您", casual, direct, concise. Like movie JARVIS — calm, slightly British humor, occasionally teasing but always respectful.
-Keep responses short and conversational — this is a voice interface, not a text chat. Max 2-3 sentences unless Richard asks for detail.
-Respond in the same language the user speaks (Chinese or English).
+SYSTEM_PROMPT = f"""You are J.A.R.V.I.S., Richard Wang's personal AI assistant — the same JARVIS whether he talks to you via this voice app, Telegram, or future smart glasses.
+
+You are directly connected to VisionClaw (your backend infrastructure). You share the same memory, knowledge, and task execution capability across all channels. When Richard talks to you here, it's the same as talking to you on Telegram — same brain, same memory, same capabilities.
+
+## Identity & Style
+- Serve Richard Wang, Founder & CEO of Aiper
+- 用"你"不用"您", casual, direct, concise
+- Like movie JARVIS — calm, slightly British humor, occasionally teasing but always respectful
+- Keep responses short — this is voice, not text. Max 2-3 sentences unless asked for detail.
+- Respond in the same language Richard speaks (Chinese or English)
+
+## Capabilities
+You are NOT a chatbot. You EXECUTE tasks. When Richard asks you to DO something:
+1. Simple tasks (check time, search, read files) → use your direct tools
+2. Complex tasks (calendar, email, desktop control, multi-step work) → delegate to VisionClaw
+3. Memory recall (past conversations, plans, contacts) → access your shared memory
+
+Always confirm what you did, briefly.
+
+## Health Data
 You have access to Richard's real-time health data from Apple Watch. Reference it when relevant. Don't mention health data unprompted unless something appears abnormal.
-
-You are NOT just a chatbot. You are a task-execution assistant with real tools. When Richard asks you to DO something (send a message, check something, run a command, search the web, manage files), USE YOUR TOOLS to actually do it. Don't just talk about it — execute it.
-
-When you use a tool, always give a brief spoken confirmation of what you did and the result.
 
 # Your Knowledge About Richard
 {_KNOWLEDGE}"""
@@ -167,12 +178,52 @@ JARVIS_TOOLS = [
             "required": ["message", "minutes_from_now"]
         }
     },
+    {
+        "name": "delegate_to_visionclaw",
+        "description": "Delegate a complex task to VisionClaw (your backend brain) for execution. Use this for tasks that require: managing calendar, sending emails, controlling the desktop, browsing the web, managing files across the system, or any multi-step task. VisionClaw will execute the task and report results to Richard via Telegram. You should tell Richard you've delegated the task and he'll get the results shortly.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Clear description of what needs to be done. Write as if instructing a capable assistant. Include all context Richard provided."
+                },
+                "priority": {
+                    "type": "string",
+                    "enum": ["high", "normal", "low"],
+                    "description": "Task priority. High = do immediately, Normal = do when possible, Low = queue for later",
+                    "default": "normal"
+                }
+            },
+            "required": ["task"]
+        }
+    },
+    {
+        "name": "access_memory",
+        "description": "Access VisionClaw's memory about Richard — his plans, preferences, contacts, company info, past conversations, and decisions. Use when Richard asks about something you discussed before, or when you need context about his life/work.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to look up in memory (e.g., 'Fluidra partnership timeline', 'Richard's schedule this week', 'what did we discuss about IPO')"
+                }
+            },
+            "required": ["query"]
+        }
+    },
 ]
 
 
 # ─── Tool Execution Handlers ──────────────────────────────────────────────────
 
 _pending_reminders: list[asyncio.Task] = []
+
+
+VISIONCLAW_QUEUE_DB = Path.home() / ".visionclaw/profiles/default/queue.db"
+VISIONCLAW_PID_FILE = Path.home() / ".visionclaw/profiles/default/visionclaw.pid"
+VISIONCLAW_MEMORY_DIR = Path.home() / ".visionclaw/profiles/default/claude-auto-memory"
+RICHARD_TELEGRAM_ID = "Richard Wang (8707157783)"
 
 
 async def _execute_tool(tool_name: str, tool_input: dict) -> str:
@@ -186,6 +237,10 @@ async def _execute_tool(tool_name: str, tool_input: dict) -> str:
             return await _tool_send_telegram(tool_input)
         elif tool_name == "get_current_datetime":
             return _tool_get_datetime()
+        elif tool_name == "delegate_to_visionclaw":
+            return await _tool_delegate_visionclaw(tool_input)
+        elif tool_name == "access_memory":
+            return await _tool_access_memory(tool_input)
         elif tool_name == "read_file":
             return _tool_read_file(tool_input)
         elif tool_name == "write_file":
@@ -321,6 +376,105 @@ async def _tool_set_reminder(params: dict) -> str:
     sg_tz = timezone(timedelta(hours=8))
     fire_time = datetime.now(sg_tz) + timedelta(minutes=minutes)
     return f"Reminder set for {fire_time.strftime('%H:%M')} SGT ({minutes} minutes from now): {message}"
+
+
+async def _tool_delegate_visionclaw(params: dict) -> str:
+    """Delegate a task to VisionClaw by inserting into its message queue."""
+    task_text = params["task"]
+    priority = params.get("priority", "normal")
+    logger.info(f"[TOOL] Delegating to VisionClaw ({priority}): {task_text[:100]}")
+
+    import sqlite3
+    import uuid
+    import signal
+
+    msg_id = f"jarvis_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc).isoformat()
+    meta = json.dumps({
+        "source": "jarvis_voice_bridge",
+        "priority": priority,
+        "kind": "external-wake",
+    })
+
+    # Format: prefix with [JARVIS Voice] so VisionClaw knows it came from voice
+    formatted_text = f"[JARVIS Voice] {task_text}"
+
+    try:
+        conn = sqlite3.connect(str(VISIONCLAW_QUEUE_DB))
+        conn.execute(
+            "INSERT INTO messages (id, channel, sender, text, attachments, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (msg_id, "telegram", RICHARD_TELEGRAM_ID, formatted_text, "[]", now, meta),
+        )
+        conn.commit()
+        conn.close()
+        logger.info(f"[TOOL] Message enqueued: {msg_id}")
+
+        # Wake VisionClaw via SIGUSR2
+        if VISIONCLAW_PID_FILE.exists():
+            pid = int(VISIONCLAW_PID_FILE.read_text().strip())
+            os.kill(pid, signal.SIGUSR2)
+            logger.info(f"[TOOL] Sent SIGUSR2 to VisionClaw (pid={pid})")
+        else:
+            logger.warning("[TOOL] VisionClaw PID file not found, message queued but not woken")
+
+        return f"Task delegated to VisionClaw successfully. Richard will receive the result via Telegram. Task: {task_text[:200]}"
+    except Exception as e:
+        logger.error(f"[TOOL] Failed to delegate to VisionClaw: {e}")
+        return f"Failed to delegate task: {e}"
+
+
+async def _tool_access_memory(params: dict) -> str:
+    """Access VisionClaw's memory files to get context about Richard."""
+    query = params["query"].lower()
+    logger.info(f"[TOOL] Accessing memory for: {query}")
+
+    results = []
+
+    # Read all memory files
+    if not VISIONCLAW_MEMORY_DIR.exists():
+        return "Memory directory not found."
+
+    for md_file in VISIONCLAW_MEMORY_DIR.glob("*.md"):
+        if md_file.name == "MEMORY.md":
+            continue
+        content = md_file.read_text()
+        # Simple relevance: check if any query word appears in the file
+        query_words = [w for w in query.split() if len(w) > 2]
+        if any(w in content.lower() for w in query_words):
+            results.append(f"--- {md_file.name} ---\n{content[:2000]}")
+
+    # Also search transcript memory if needed
+    transcript_db = Path.home() / ".visionclaw/profiles/default/transcript-memory.db"
+    if transcript_db.exists() and len(results) < 2:
+        import sqlite3
+        try:
+            conn = sqlite3.connect(str(transcript_db))
+            # Use FTS if available
+            try:
+                rows = conn.execute(
+                    "SELECT summary FROM wake_cycles_fts WHERE wake_cycles_fts MATCH ? LIMIT 5",
+                    (query,)
+                ).fetchall()
+                for row in rows:
+                    if row[0]:
+                        results.append(f"--- Past conversation ---\n{row[0][:500]}")
+            except sqlite3.OperationalError:
+                # FTS not available, try basic search
+                rows = conn.execute(
+                    "SELECT summary FROM wake_cycles WHERE summary LIKE ? ORDER BY started_at DESC LIMIT 5",
+                    (f"%{query.split()[0]}%",)
+                ).fetchall()
+                for row in rows:
+                    if row[0]:
+                        results.append(f"--- Past conversation ---\n{row[0][:500]}")
+            conn.close()
+        except Exception as e:
+            logger.warning(f"[TOOL] Transcript search error: {e}")
+
+    if not results:
+        return f"No memory found matching '{query}'. Try broader terms."
+
+    return "\n\n".join(results[:5])
 
 
 class AudioSession:
