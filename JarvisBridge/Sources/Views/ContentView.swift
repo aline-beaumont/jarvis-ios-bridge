@@ -5,8 +5,23 @@ struct ContentView: View {
     @EnvironmentObject var bridgeManager: JarvisBridgeManager
 
     var body: some View {
-        NavigationView {
-            VStack(spacing: 24) {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 16) {
+                HStack {
+                    Text("J.A.R.V.I.S")
+                        .font(.system(size: 28, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(red: 0.0, green: 0.85, blue: 0.9))
+                    Spacer()
+                    NavigationLink(destination: SettingsView()) {
+                        Image(systemName: "gear")
+                            .foregroundColor(.gray)
+                            .font(.title3)
+                    }
+                }
+                .padding(.horizontal)
+
                 StatusHeaderView()
 
                 JarvisOrbView()
@@ -15,9 +30,7 @@ struct ContentView: View {
                     ResponseCard(text: appState.lastResponse)
                 }
 
-                if let health = appState.healthSummary {
-                    HealthCard(summary: health)
-                }
+                HealthCard(summary: appState.healthSummary)
 
                 Spacer()
 
@@ -28,7 +41,7 @@ struct ContentView: View {
                             .foregroundColor(.white)
                             .padding(.horizontal, 24)
                             .padding(.vertical, 12)
-                            .background(Color.blue)
+                            .background(Color(red: 0.0, green: 0.6, blue: 0.7))
                             .cornerRadius(12)
                     }
 
@@ -38,20 +51,14 @@ struct ContentView: View {
                             .foregroundColor(.white)
                             .padding(.horizontal, 24)
                             .padding(.vertical, 12)
-                            .background(Color.red.opacity(0.8))
+                            .background(Color.red.opacity(0.6))
                             .cornerRadius(12)
                     }
                 }
-
-                NavigationLink(destination: SettingsView()) {
-                    Label("Settings", systemImage: "gear")
-                        .font(.headline)
-                        .padding()
-                }
             }
             .padding()
-            .navigationTitle("J.A.R.V.I.S")
         }
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -96,14 +103,15 @@ struct StatusBadge: View {
                 Text(label)
                     .font(.caption)
                     .fontWeight(.medium)
+                    .foregroundColor(.white)
                 Text(status.rawValue)
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.gray)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color(.systemGray6))
+        .background(Color.white.opacity(0.1))
         .cornerRadius(10)
     }
 }
@@ -208,20 +216,21 @@ struct ResponseCard: View {
         VStack(alignment: .leading, spacing: 8) {
             Label("J.A.R.V.I.S", systemImage: "brain")
                 .font(.caption)
-                .foregroundColor(.blue)
+                .foregroundColor(Color(red: 0.0, green: 0.85, blue: 0.9))
             Text(text)
                 .font(.body)
+                .foregroundColor(.white)
                 .lineLimit(8)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.systemGray6))
+        .background(Color.white.opacity(0.08))
         .cornerRadius(12)
     }
 }
 
 struct HealthCard: View {
-    let summary: HealthSummary
+    let summary: HealthSummary?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -229,27 +238,33 @@ struct HealthCard: View {
                 .font(.caption)
                 .foregroundColor(.red)
 
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                if let hr = summary.heartRate {
-                    VitalBadge(icon: "heart.fill", value: "\(Int(hr))", unit: "bpm", color: .red)
+            if let summary = summary {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    if let hr = summary.heartRate {
+                        VitalBadge(icon: "heart.fill", value: "\(Int(hr))", unit: "bpm", color: .red)
+                    }
+                    if let spo2 = summary.bloodOxygen {
+                        VitalBadge(icon: "lungs.fill", value: "\(Int(spo2))", unit: "%", color: .blue)
+                    }
+                    if let steps = summary.steps {
+                        VitalBadge(icon: "figure.walk", value: "\(steps)", unit: "steps", color: .green)
+                    }
+                    if let hrv = summary.hrv {
+                        VitalBadge(icon: "waveform.path.ecg", value: "\(Int(hrv))", unit: "ms", color: .purple)
+                    }
+                    if let sleep = summary.sleepHours {
+                        VitalBadge(icon: "bed.double.fill", value: String(format: "%.1f", sleep), unit: "hrs", color: .indigo)
+                    }
                 }
-                if let spo2 = summary.bloodOxygen {
-                    VitalBadge(icon: "lungs.fill", value: "\(Int(spo2))", unit: "%", color: .blue)
-                }
-                if let steps = summary.steps {
-                    VitalBadge(icon: "figure.walk", value: "\(steps)", unit: "steps", color: .green)
-                }
-                if let hrv = summary.hrv {
-                    VitalBadge(icon: "waveform.path.ecg", value: "\(Int(hrv))", unit: "ms", color: .purple)
-                }
-                if let sleep = summary.sleepHours {
-                    VitalBadge(icon: "bed.double.fill", value: String(format: "%.1f", sleep), unit: "hrs", color: .indigo)
-                }
+            } else {
+                Text("Press Start to sync health data")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.systemGray6))
+        .background(Color(.systemGray6).opacity(0.3))
         .cornerRadius(12)
     }
 }
