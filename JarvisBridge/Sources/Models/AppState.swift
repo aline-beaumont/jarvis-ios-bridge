@@ -36,7 +36,13 @@ class AppState: ObservableObject {
     }
 
     var serverURL: URL? {
-        URL(string: "ws://\(serverHost):\(serverPort)/ws")
+        if serverHost.hasPrefix("wss://") || serverHost.hasPrefix("ws://") {
+            return URL(string: serverHost)
+        }
+        if serverHost.contains(".") && !serverHost.contains(":") && serverPort == 443 {
+            return URL(string: "wss://\(serverHost)/ws")
+        }
+        return URL(string: "ws://\(serverHost):\(serverPort)/ws")
     }
 
     init() {
