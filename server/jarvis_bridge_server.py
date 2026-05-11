@@ -2,6 +2,7 @@
 JARVIS Bridge Server - WebSocket endpoint for the iOS bridge app.
 Runs on Mac mini, receives audio from phone, processes via JARVIS brain, returns TTS.
 Uses Piper TTS with JARVIS voice model (Paul Bettany style).
+Now with tool-use: JARVIS can execute tasks, not just chat.
 """
 from __future__ import annotations
 
@@ -13,8 +14,11 @@ import os
 import subprocess
 import tempfile
 import wave
+import shlex
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+import httpx
 import websockets
 from aiohttp import web
 
@@ -43,8 +47,280 @@ Keep responses short and conversational — this is a voice interface, not a tex
 Respond in the same language the user speaks (Chinese or English).
 You have access to Richard's real-time health data from Apple Watch. Reference it when relevant. Don't mention health data unprompted unless something appears abnormal.
 
+You are NOT just a chatbot. You are a task-execution assistant with real tools. When Richard asks you to DO something (send a message, check something, run a command, search the web, manage files), USE YOUR TOOLS to actually do it. Don't just talk about it — execute it.
+
+When you use a tool, always give a brief spoken confirmation of what you did and the result.
+
 # Your Knowledge About Richard
 {_KNOWLEDGE}"""
+
+
+# ─── Tool Definitions for Claude API ───────────────────────────────────────────
+
+JARVIS_TOOLS = [
+    {
+        "name": "run_shell_command",
+        "description": "Execute a shell command on Richard's Mac mini server. Use for: checking system status, running scripts, managing files, git operations, opening apps, etc. Be careful with destructive commands.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The shell command to execute (bash)"
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds (default 30)",
+                    "default": 30
+                }
+            },
+            "required": ["command"]
+        }
+    },
+    {
+        "name": "web_search",
+        "description": "Search the web for information. Use when Richard asks about current events, prices, news, or anything that needs up-to-date info.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query"
+                }
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "send_telegram_message",
+        "description": "Send a message to someone via Telegram through VisionClaw. Use when Richard asks you to message someone or send him a note/reminder.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The message text to send"
+                },
+                "recipient": {
+                    "type": "string",
+                    "description": "Who to send to. Default is Richard himself. Use 'richard' or a contact name."
+                }
+            },
+            "required": ["message"]
+        }
+    },
+    {
+        "name": "get_current_datetime",
+        "description": "Get the current date and time in Singapore timezone (Richard's location).",
+        "input_schema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "read_file",
+        "description": "Read the contents of a file on the server.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute file path to read"
+                }
+            },
+            "required": ["path"]
+        }
+    },
+    {
+        "name": "write_file",
+        "description": "Write content to a file. Use for creating notes, saving info, etc.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute file path to write to"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Content to write"
+                }
+            },
+            "required": ["path", "content"]
+        }
+    },
+    {
+        "name": "set_reminder",
+        "description": "Set a reminder that will be sent to Richard via Telegram at the specified time.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The reminder message"
+                },
+                "minutes_from_now": {
+                    "type": "integer",
+                    "description": "Minutes from now to send the reminder"
+                }
+            },
+            "required": ["message", "minutes_from_now"]
+        }
+    },
+]
+
+
+# ─── Tool Execution Handlers ──────────────────────────────────────────────────
+
+_pending_reminders: list[asyncio.Task] = []
+
+
+async def _execute_tool(tool_name: str, tool_input: dict) -> str:
+    """Execute a tool and return the result as a string."""
+    try:
+        if tool_name == "run_shell_command":
+            return await _tool_run_shell(tool_input)
+        elif tool_name == "web_search":
+            return await _tool_web_search(tool_input)
+        elif tool_name == "send_telegram_message":
+            return await _tool_send_telegram(tool_input)
+        elif tool_name == "get_current_datetime":
+            return _tool_get_datetime()
+        elif tool_name == "read_file":
+            return _tool_read_file(tool_input)
+        elif tool_name == "write_file":
+            return _tool_write_file(tool_input)
+        elif tool_name == "set_reminder":
+            return await _tool_set_reminder(tool_input)
+        else:
+            return f"Unknown tool: {tool_name}"
+    except Exception as e:
+        logger.error(f"Tool {tool_name} error: {e}")
+        return f"Error executing {tool_name}: {str(e)}"
+
+
+async def _tool_run_shell(params: dict) -> str:
+    command = params["command"]
+    timeout = params.get("timeout", 30)
+    logger.info(f"[TOOL] Running shell command: {command}")
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(Path.home()),
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        output = stdout.decode("utf-8", errors="replace")
+        err_output = stderr.decode("utf-8", errors="replace")
+        result = ""
+        if output:
+            result += output[:3000]
+        if err_output:
+            result += f"\n[stderr]: {err_output[:1000]}"
+        if proc.returncode != 0:
+            result += f"\n[exit code: {proc.returncode}]"
+        return result.strip() or "(no output)"
+    except asyncio.TimeoutError:
+        return f"Command timed out after {timeout}s"
+
+
+async def _tool_web_search(params: dict) -> str:
+    query = params["query"]
+    logger.info(f"[TOOL] Web search: {query}")
+    # Use SerpAPI if available, otherwise fallback to DuckDuckGo lite
+    serpapi_key = os.environ.get("SERPAPI_KEY", "")
+    if serpapi_key:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://serpapi.com/search",
+                params={"q": query, "api_key": serpapi_key, "num": 5},
+                timeout=15.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                results = []
+                for r in data.get("organic_results", [])[:5]:
+                    results.append(f"- {r.get('title', '')}: {r.get('snippet', '')}")
+                if data.get("answer_box", {}).get("answer"):
+                    results.insert(0, f"Answer: {data['answer_box']['answer']}")
+                return "\n".join(results) if results else "No results found."
+    # Fallback: use a simple command-line search
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            f'curl -s "https://lite.duckduckgo.com/lite/?q={query.replace(" ", "+")}" | python3 -c "import sys,html,re; t=sys.stdin.read(); [print(m) for m in re.findall(r\'class=\"result-snippet\">(.*?)</\', t)[:5]]"',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+        output = stdout.decode().strip()
+        return output if output else f"Search completed for '{query}' but no snippet results extracted. Try asking me to run a more specific command."
+    except Exception:
+        return f"Web search unavailable. Query was: {query}"
+
+
+async def _tool_send_telegram(params: dict) -> str:
+    message = params["message"]
+    recipient = params.get("recipient", "richard")
+    logger.info(f"[TOOL] Sending Telegram to {recipient}: {message[:50]}...")
+    # Use VisionClaw's notify endpoint
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            f'curl -s -X POST http://localhost:3101/api/notify '
+            f'-H "Content-Type: application/json" '
+            f'-d \'{json.dumps({"message": message, "channel": "telegram"})}\'',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        return f"Message sent to {recipient} via Telegram."
+    except Exception as e:
+        return f"Failed to send Telegram message: {e}"
+
+
+def _tool_get_datetime() -> str:
+    sg_tz = timezone(timedelta(hours=8))
+    now = datetime.now(sg_tz)
+    return now.strftime("Current time in Singapore: %Y-%m-%d %A %H:%M:%S (SGT/UTC+8)")
+
+
+def _tool_read_file(params: dict) -> str:
+    path = params["path"]
+    logger.info(f"[TOOL] Reading file: {path}")
+    p = Path(path)
+    if not p.exists():
+        return f"File not found: {path}"
+    if p.stat().st_size > 50000:
+        return f"File too large ({p.stat().st_size} bytes). Reading first 5000 chars.\n\n" + p.read_text()[:5000]
+    return p.read_text()
+
+
+def _tool_write_file(params: dict) -> str:
+    path = params["path"]
+    content = params["content"]
+    logger.info(f"[TOOL] Writing file: {path} ({len(content)} chars)")
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content)
+    return f"File written: {path} ({len(content)} characters)"
+
+
+async def _tool_set_reminder(params: dict) -> str:
+    message = params["message"]
+    minutes = params["minutes_from_now"]
+    logger.info(f"[TOOL] Setting reminder in {minutes}min: {message}")
+
+    async def _fire_reminder():
+        await asyncio.sleep(minutes * 60)
+        reminder_text = f"⏰ Reminder from JARVIS: {message}"
+        await _tool_send_telegram({"message": reminder_text, "recipient": "richard"})
+        logger.info(f"[REMINDER] Fired: {message}")
+
+    task = asyncio.create_task(_fire_reminder())
+    _pending_reminders.append(task)
+    sg_tz = timezone(timedelta(hours=8))
+    fire_time = datetime.now(sg_tz) + timedelta(minutes=minutes)
+    return f"Reminder set for {fire_time.strftime('%H:%M')} SGT ({minutes} minutes from now): {message}"
 
 
 class AudioSession:
@@ -85,8 +361,6 @@ async def transcribe_audio(pcm_data: bytes) -> str:
         logger.warning("No OPENAI_API_KEY set, returning placeholder transcript")
         return "[Audio received but transcription unavailable - set OPENAI_API_KEY]"
 
-    import httpx
-
     wav_data = pcm_to_wav(pcm_data)
 
     async with httpx.AsyncClient() as client:
@@ -106,12 +380,10 @@ async def transcribe_audio(pcm_data: bytes) -> str:
 
 
 async def get_jarvis_response(transcript: str, conversation_history: list, health_data: dict = None) -> str:
-    """Get response from Claude (JARVIS brain)."""
+    """Get response from Claude (JARVIS brain) with tool-use support."""
     if not ANTHROPIC_API_KEY:
         logger.warning("No ANTHROPIC_API_KEY set, returning placeholder response")
         return f"I heard: \"{transcript}\". JARVIS brain is not connected yet — please set ANTHROPIC_API_KEY."
-
-    import httpx
 
     user_content = transcript
     if health_data:
@@ -120,34 +392,82 @@ async def get_jarvis_response(transcript: str, conversation_history: list, healt
 
     conversation_history.append({"role": "user", "content": user_content})
 
-    # Keep conversation history manageable
     if len(conversation_history) > 20:
         conversation_history[:] = conversation_history[-20:]
 
+    max_tool_rounds = 5
+    final_text = ""
+
     async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": 300,
-                "system": SYSTEM_PROMPT,
-                "messages": conversation_history,
-            },
-            timeout=30.0,
-        )
-        if response.status_code == 200:
+        for round_num in range(max_tool_rounds):
+            logger.info(f"Claude API call (round {round_num + 1})")
+            response = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-sonnet-4-20250514",
+                    "max_tokens": 1024,
+                    "system": SYSTEM_PROMPT,
+                    "tools": JARVIS_TOOLS,
+                    "messages": conversation_history,
+                },
+                timeout=60.0,
+            )
+
+            if response.status_code != 200:
+                logger.error(f"Claude API error: {response.status_code} {response.text}")
+                return "I'm having trouble processing that, sir. Please try again."
+
             result = response.json()
-            assistant_msg = result["content"][0]["text"]
-            conversation_history.append({"role": "assistant", "content": assistant_msg})
-            return assistant_msg
-        else:
-            logger.error(f"Claude API error: {response.status_code} {response.text}")
-            return "I'm having trouble processing that, sir. Please try again."
+            stop_reason = result.get("stop_reason")
+            content_blocks = result.get("content", [])
+
+            # Collect text blocks for final response
+            text_parts = []
+            tool_uses = []
+            for block in content_blocks:
+                if block["type"] == "text":
+                    text_parts.append(block["text"])
+                elif block["type"] == "tool_use":
+                    tool_uses.append(block)
+
+            if text_parts:
+                final_text = " ".join(text_parts)
+
+            # If no tool use, we're done
+            if stop_reason == "end_turn" or not tool_uses:
+                conversation_history.append({"role": "assistant", "content": content_blocks})
+                break
+
+            # Tool use: execute tools and feed results back
+            conversation_history.append({"role": "assistant", "content": content_blocks})
+
+            tool_results = []
+            for tool_use in tool_uses:
+                tool_name = tool_use["name"]
+                tool_input = tool_use["input"]
+                tool_id = tool_use["id"]
+                logger.info(f"Executing tool: {tool_name}({json.dumps(tool_input, ensure_ascii=False)[:200]})")
+
+                result_str = await _execute_tool(tool_name, tool_input)
+                logger.info(f"Tool result ({tool_name}): {result_str[:200]}")
+
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "content": result_str[:4000],
+                })
+
+            conversation_history.append({"role": "user", "content": tool_results})
+
+    if not final_text:
+        final_text = "Done, sir."
+
+    return final_text
 
 
 def _is_chinese(text: str) -> bool:
@@ -198,8 +518,6 @@ async def _generate_tts_openai(text: str) -> bytes | None:
     if not OPENAI_API_KEY:
         logger.warning("No OPENAI_API_KEY and Piper unavailable — no TTS output")
         return None
-
-    import httpx
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
