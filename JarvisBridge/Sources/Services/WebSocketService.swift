@@ -117,9 +117,14 @@ class WebSocketService: NSObject {
                let audioData = Data(base64Encoded: audioBase64) {
                 delegate?.webSocketDidReceiveAudio(audioData)
             }
-        case "response_text":
-            if let responseText = json["text"] as? String {
+        case "response", "response_text":
+            let responseText = (json["transcript"] as? String) ?? (json["text"] as? String) ?? ""
+            if !responseText.isEmpty {
                 delegate?.webSocketDidReceiveText(responseText)
+            }
+            if let audioBase64 = json["audio"] as? String,
+               let audioData = Data(base64Encoded: audioBase64) {
+                delegate?.webSocketDidReceiveAudio(audioData)
             }
         case "error":
             let errorMsg = json["message"] as? String ?? "Unknown server error"
