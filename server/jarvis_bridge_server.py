@@ -2,6 +2,7 @@
 JARVIS Bridge Server - WebSocket endpoint for the iOS bridge app.
 Runs on Mac mini, receives audio from phone, processes via JARVIS brain, returns TTS.
 """
+from __future__ import annotations
 
 import asyncio
 import json
