@@ -201,6 +201,7 @@ struct JarvisOrbView: View {
                         )
                 }
             }
+            .contentShape(Circle())
             .onTapGesture {
                 switch appState.listeningState {
                 case .recording:

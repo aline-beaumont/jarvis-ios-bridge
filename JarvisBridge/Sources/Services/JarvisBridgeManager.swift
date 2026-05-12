@@ -12,6 +12,8 @@ class JarvisBridgeManager: ObservableObject {
     private let healthKit = HealthKitService()
 
     private var cancellables = Set<AnyCancellable>()
+    private var recordingTimer: Timer?
+    private let maxRecordingDuration: TimeInterval = 15
 
     func configure(with appState: AppState) {
         self.appState = appState
@@ -25,6 +27,8 @@ class JarvisBridgeManager: ObservableObject {
     }
 
     func stop() {
+        recordingTimer?.invalidate()
+        recordingTimer = nil
         wakeWordService.stopListening()
         audioRecording.stopRecording()
         webSocket.disconnect()
@@ -56,6 +60,8 @@ class JarvisBridgeManager: ObservableObject {
     }
 
     func finishRecording() {
+        recordingTimer?.invalidate()
+        recordingTimer = nil
         audioRecording.stopRecording()
     }
 
@@ -85,9 +91,17 @@ class JarvisBridgeManager: ObservableObject {
         do {
             try audioRecording.startRecording()
             appState?.listeningState = .recording
+            startRecordingTimer()
         } catch {
             print("[Bridge] Recording start failed: \(error)")
             appState?.listeningState = .waitingForWakeWord
+        }
+    }
+
+    private func startRecordingTimer() {
+        recordingTimer?.invalidate()
+        recordingTimer = Timer.scheduledTimer(withTimeInterval: maxRecordingDuration, repeats: false) { [weak self] _ in
+            self?.finishRecording()
         }
     }
 

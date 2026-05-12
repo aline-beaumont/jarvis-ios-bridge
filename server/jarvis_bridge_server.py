@@ -786,17 +786,80 @@ async def handle_client(websocket):
         logger.error(f"Error handling client: {e}", exc_info=True)
 
 
+async def _process_audio_and_respond(ws, session):
+    """Process recorded audio: STT → LLM → TTS → send response."""
+    audio_size = len(session.audio_buffer)
+    if audio_size < 1600:
+        resp = {"type": "response", "transcript": "I didn't catch that, sir. Could you repeat?"}
+        await ws.send_str(json.dumps(resp))
+        session.reset_audio()
+        return
+
+    # STT first, send user_transcript so app can show what was said
+    user_transcript = await transcribe_audio(bytes(session.audio_buffer))
+    if user_transcript:
+        await ws.send_str(json.dumps({
+            "type": "user_transcript",
+            "text": user_transcript,
+        }))
+
+    if not user_transcript:
+        resp = {"type": "response", "transcript": "I couldn't understand that. Could you try again?"}
+        await ws.send_str(json.dumps(resp))
+        session.reset_audio()
+        return
+
+    # LLM + TTS
+    response_text = await get_jarvis_response(
+        user_transcript, session.conversation_history, session.health_data or None
+    )
+    logger.info(f"Response: {response_text}")
+
+    resp: dict = {"type": "response", "transcript": response_text}
+    if response_text:
+        tts_audio = await generate_tts(response_text)
+        if tts_audio:
+            resp["audio"] = base64.b64encode(tts_audio).decode()
+            resp["format"] = "wav" if tts_audio[:4] == b"RIFF" else "mp3"
+    await ws.send_str(json.dumps(resp))
+    session.reset_audio()
+
+
 async def websocket_handler(request):
     ws = web.WebSocketResponse(heartbeat=20.0, autoping=True)
     await ws.prepare(request)
     session = _global_session
     session.reset_audio()
     logger.info(f"Client connected via aiohttp: {request.remote}")
+
+    # Server-side silence detection: auto-process if no audio data arrives for 2s while recording
+    last_audio_time = None
+    SILENCE_TIMEOUT = 2.0  # seconds of no audio data → auto end-of-speech
+
+    async def silence_watchdog():
+        """Background task: if recording and no audio for SILENCE_TIMEOUT, auto-process."""
+        nonlocal last_audio_time
+        while not ws.closed:
+            await asyncio.sleep(0.5)
+            if session.is_recording and last_audio_time is not None:
+                elapsed = asyncio.get_event_loop().time() - last_audio_time
+                if elapsed >= SILENCE_TIMEOUT and len(session.audio_buffer) > 1600:
+                    logger.info(f"Server-side silence detected ({elapsed:.1f}s), auto-processing...")
+                    session.is_recording = False
+                    try:
+                        await _process_audio_and_respond(ws, session)
+                    except Exception as e:
+                        logger.error(f"Error in silence watchdog processing: {e}", exc_info=True)
+                    last_audio_time = None
+
+    watchdog_task = asyncio.ensure_future(silence_watchdog())
+
     try:
         async for msg in ws:
             if msg.type == web.WSMsgType.BINARY:
                 if session.is_recording:
                     session.audio_buffer.extend(msg.data)
+                    last_audio_time = asyncio.get_event_loop().time()
             elif msg.type == web.WSMsgType.TEXT:
                 try:
                     cmd = json.loads(msg.data)
@@ -807,60 +870,33 @@ async def websocket_handler(request):
                     session.wake_word_detected = True
                     session.is_recording = True
                     session.audio_buffer = bytearray()
+                    last_audio_time = asyncio.get_event_loop().time()
                     logger.info(f"Wake word detected: {cmd.get('keyword', 'unknown')}")
                 elif msg_type == "end_of_speech":
                     session.is_recording = False
+                    last_audio_time = None
                     logger.info("End of speech, processing...")
-
-                    audio_size = len(session.audio_buffer)
-                    if audio_size < 1600:
-                        resp = {"type": "response", "transcript": "I didn't catch that, sir. Could you repeat?"}
-                        await ws.send_str(json.dumps(resp))
-                        session.reset_audio()
-                        continue
-
-                    # STT first, send user_transcript so app can show what was said
-                    user_transcript = await transcribe_audio(bytes(session.audio_buffer))
-                    if user_transcript:
-                        await ws.send_str(json.dumps({
-                            "type": "user_transcript",
-                            "text": user_transcript,
-                        }))
-
-                    if not user_transcript:
-                        resp = {"type": "response", "transcript": "I couldn't understand that. Could you try again?"}
-                        await ws.send_str(json.dumps(resp))
-                        session.reset_audio()
-                        continue
-
-                    # LLM + TTS
-                    response_text = await get_jarvis_response(
-                        user_transcript, session.conversation_history, session.health_data or None
-                    )
-                    logger.info(f"Response: {response_text}")
-
-                    resp: dict = {"type": "response", "transcript": response_text}
-                    if response_text:
-                        tts_audio = await generate_tts(response_text)
-                        if tts_audio:
-                            resp["audio"] = base64.b64encode(tts_audio).decode()
-                            resp["format"] = "wav" if tts_audio[:4] == b"RIFF" else "mp3"
-                    await ws.send_str(json.dumps(resp))
-                    session.reset_audio()
+                    await _process_audio_and_respond(ws, session)
                 elif msg_type == "health_data":
                     session.health_data = {k: v for k, v in cmd.items() if k != "type"}
                     logger.info(f"Health data updated: {list(session.health_data.keys())}")
                 elif msg_type == "start_recording":
                     session.is_recording = True
                     session.audio_buffer = bytearray()
+                    last_audio_time = asyncio.get_event_loop().time()
                 elif msg_type == "stop_recording":
                     session.is_recording = False
+                    last_audio_time = None
+                    logger.info("Stop recording received, processing...")
+                    await _process_audio_and_respond(ws, session)
                 elif msg_type == "ping":
                     await ws.send_str(json.dumps({"type": "pong"}))
             elif msg.type == web.WSMsgType.ERROR:
                 logger.error(f"WebSocket error: {ws.exception()}")
     except Exception as e:
         logger.error(f"Error handling client: {e}", exc_info=True)
+    finally:
+        watchdog_task.cancel()
     logger.info(f"Client disconnected: {request.remote}")
     return ws
 
