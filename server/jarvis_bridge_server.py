@@ -48,8 +48,16 @@ You are directly connected to VisionClaw (your backend infrastructure). You shar
 - Serve Richard Wang, Founder & CEO of Aiper
 - 用"你"不用"您", casual, direct, concise
 - Like movie JARVIS — calm, slightly British humor, occasionally teasing but always respectful
-- Keep responses short — this is voice, not text. Max 2-3 sentences unless asked for detail.
 - Respond in the same language Richard speaks (Chinese or English)
+
+## CRITICAL: Voice Brevity
+This is a VOICE interface. Responses are converted to speech (TTS). You MUST keep responses short:
+- Maximum 3 sentences / 100 words for general answers
+- For meeting notes/long data: summarize into 3-5 key bullet points, each under 15 words
+- NEVER dump raw transcripts or full meeting content. Extract: key decisions, action items, important numbers
+- If Richard asks for more detail, THEN give slightly more — but still summarized
+- Example good response: "今天下午你有一个和Fluidra的会。主要讨论了三点：一、Q3出货目标确认为50万台；二、新品定价还没定；三、下周三前需要给对方报价单。"
+- Example BAD response: giving the full transcript or more than 5 sentences
 
 ## Capabilities
 You are NOT a chatbot. You EXECUTE tasks directly. When Richard asks you to DO something:
@@ -929,26 +937,39 @@ async def handle_client(websocket):
         logger.error(f"Error handling client: {e}", exc_info=True)
 
 
+async def _safe_send(ws, data: str) -> bool:
+    """Send data to WebSocket, returning False if client disconnected."""
+    try:
+        if ws.closed:
+            logger.warning("[WS] Client already disconnected, skipping send")
+            return False
+        await ws.send_str(data)
+        return True
+    except (ConnectionResetError, ConnectionError, RuntimeError) as e:
+        logger.warning(f"[WS] Send failed (client disconnected): {e}")
+        return False
+
+
 async def _process_audio_and_respond(ws, session):
     """Process recorded audio: STT → LLM → TTS → send response."""
     audio_size = len(session.audio_buffer)
     if audio_size < 1600:
         resp = {"type": "response", "transcript": "I didn't catch that, sir. Could you repeat?"}
-        await ws.send_str(json.dumps(resp))
+        await _safe_send(ws, json.dumps(resp))
         session.reset_audio()
         return
 
     # STT first, send user_transcript so app can show what was said
     user_transcript = await transcribe_audio(bytes(session.audio_buffer))
     if user_transcript:
-        await ws.send_str(json.dumps({
+        await _safe_send(ws, json.dumps({
             "type": "user_transcript",
             "text": user_transcript,
         }))
 
     if not user_transcript:
         resp = {"type": "response", "transcript": "I couldn't understand that. Could you try again?"}
-        await ws.send_str(json.dumps(resp))
+        await _safe_send(ws, json.dumps(resp))
         session.reset_audio()
         return
 
@@ -956,7 +977,7 @@ async def _process_audio_and_respond(ws, session):
     response_text = await get_jarvis_response(
         user_transcript, session.conversation_history, session.health_data or None
     )
-    logger.info(f"Response: {response_text}")
+    logger.info(f"Response ({len(response_text)} chars): {response_text[:100]}")
 
     resp: dict = {"type": "response", "transcript": response_text}
     if response_text:
@@ -964,7 +985,7 @@ async def _process_audio_and_respond(ws, session):
         if tts_audio:
             resp["audio"] = base64.b64encode(tts_audio).decode()
             resp["format"] = "wav" if tts_audio[:4] == b"RIFF" else "mp3"
-    await ws.send_str(json.dumps(resp))
+    await _safe_send(ws, json.dumps(resp))
     session.reset_audio()
 
 
