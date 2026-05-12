@@ -4,6 +4,7 @@ protocol WebSocketServiceDelegate: AnyObject {
     func webSocketDidConnect()
     func webSocketDidDisconnect(error: Error?)
     func webSocketDidReceiveText(_ text: String)
+    func webSocketDidReceiveUserTranscript(_ text: String)
     func webSocketDidReceiveAudio(_ data: Data)
 }
 
@@ -13,18 +14,23 @@ class WebSocketService: NSObject {
     private var webSocket: URLSessionWebSocketTask?
     private var session: URLSession?
     private var url: URL?
-    private var isConnected = false
+    private(set) var isConnected = false
     private var reconnectAttempts = 0
     private let maxReconnectAttempts = 5
     private var reconnectTimer: Timer?
+    private var pingTimer: Timer?
+    private var intentionalDisconnect = false
 
     func connect(to url: URL) {
         self.url = url
         reconnectAttempts = 0
+        intentionalDisconnect = false
         establishConnection()
     }
 
     func disconnect() {
+        intentionalDisconnect = true
+        stopPingTimer()
         reconnectTimer?.invalidate()
         reconnectTimer = nil
         webSocket?.cancel(with: .normalClosure, reason: nil)
@@ -69,18 +75,51 @@ class WebSocketService: NSObject {
         sendCommand(payload)
     }
 
+    func sendStartRecording() {
+        sendCommand(["type": "wake_word", "keyword": "push_to_talk"])
+    }
+
     // MARK: - Private
 
     private func establishConnection() {
         guard let url = url else { return }
 
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
-        session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
+        webSocket?.cancel(with: .goingAway, reason: nil)
+
+        if session == nil {
+            let config = URLSessionConfiguration.default
+            config.timeoutIntervalForRequest = 60
+            config.waitsForConnectivity = true
+            session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
+        }
 
         webSocket = session?.webSocketTask(with: url)
         webSocket?.resume()
         receiveMessage()
+    }
+
+    private func startPingTimer() {
+        stopPingTimer()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            self?.sendPing()
+        }
+    }
+
+    private func stopPingTimer() {
+        pingTimer?.invalidate()
+        pingTimer = nil
+    }
+
+    private func sendPing() {
+        guard isConnected else { return }
+        webSocket?.sendPing { [weak self] error in
+            if let error = error {
+                print("[WebSocket] Ping failed: \(error)")
+                DispatchQueue.main.async {
+                    self?.handleDisconnect(error: error)
+                }
+            }
+        }
     }
 
     private func receiveMessage() {
@@ -117,6 +156,11 @@ class WebSocketService: NSObject {
                let audioData = Data(base64Encoded: audioBase64) {
                 delegate?.webSocketDidReceiveAudio(audioData)
             }
+        case "user_transcript":
+            let text = (json["text"] as? String) ?? ""
+            if !text.isEmpty {
+                delegate?.webSocketDidReceiveUserTranscript(text)
+            }
         case "response", "response_text":
             let responseText = (json["transcript"] as? String) ?? (json["text"] as? String) ?? ""
             if !responseText.isEmpty {
@@ -126,18 +170,24 @@ class WebSocketService: NSObject {
                let audioData = Data(base64Encoded: audioBase64) {
                 delegate?.webSocketDidReceiveAudio(audioData)
             }
+        case "pong":
+            break
         case "error":
             let errorMsg = json["message"] as? String ?? "Unknown server error"
             delegate?.webSocketDidReceiveText("[Error] \(errorMsg)")
         default:
-            delegate?.webSocketDidReceiveText(text)
+            break
         }
     }
 
     private func handleDisconnect(error: Error?) {
+        guard isConnected else { return }
         isConnected = false
+        stopPingTimer()
         delegate?.webSocketDidDisconnect(error: error)
-        attemptReconnect()
+        if !intentionalDisconnect {
+            attemptReconnect()
+        }
     }
 
     private func attemptReconnect() {
@@ -145,6 +195,7 @@ class WebSocketService: NSObject {
         reconnectAttempts += 1
         let delay = TimeInterval(min(pow(2.0, Double(reconnectAttempts)), 30))
 
+        reconnectTimer?.invalidate()
         reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             self?.establishConnection()
         }
@@ -155,11 +206,16 @@ extension WebSocketService: URLSessionWebSocketDelegate {
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
         isConnected = true
         reconnectAttempts = 0
+        startPingTimer()
         delegate?.webSocketDidConnect()
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         isConnected = false
+        stopPingTimer()
         delegate?.webSocketDidDisconnect(error: nil)
+        if !intentionalDisconnect {
+            attemptReconnect()
+        }
     }
 }

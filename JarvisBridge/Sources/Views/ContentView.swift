@@ -8,10 +8,10 @@ struct ContentView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            VStack(spacing: 16) {
+            VStack(spacing: 12) {
                 HStack {
                     Text("J.A.R.V.I.S")
-                        .font(.system(size: 28, weight: .bold, design: .monospaced))
+                        .font(.system(size: 24, weight: .bold, design: .monospaced))
                         .foregroundColor(Color(red: 0.0, green: 0.85, blue: 0.9))
                     Spacer()
                     NavigationLink(destination: SettingsView()) {
@@ -26,33 +26,31 @@ struct ContentView: View {
 
                 JarvisOrbView()
 
-                if !appState.lastResponse.isEmpty {
-                    ResponseCard(text: appState.lastResponse)
+                if !appState.chatMessages.isEmpty {
+                    ConversationView()
                 }
 
                 HealthCard(summary: appState.healthSummary)
 
-                Spacer()
-
-                HStack(spacing: 20) {
+                HStack(spacing: 16) {
                     Button(action: { bridgeManager.start() }) {
-                        Label("Start", systemImage: "play.fill")
-                            .font(.headline)
+                        Label("Connect", systemImage: "antenna.radiowaves.left.and.right")
+                            .font(.subheadline.bold())
                             .foregroundColor(.white)
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 12)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
                             .background(Color(red: 0.0, green: 0.6, blue: 0.7))
-                            .cornerRadius(12)
+                            .cornerRadius(10)
                     }
 
                     Button(action: { bridgeManager.stop() }) {
                         Label("Stop", systemImage: "stop.fill")
-                            .font(.headline)
+                            .font(.subheadline.bold())
                             .foregroundColor(.white)
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 12)
-                            .background(Color.red.opacity(0.6))
-                            .cornerRadius(12)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
+                            .background(Color.red.opacity(0.5))
+                            .cornerRadius(10)
                     }
                 }
             }
@@ -140,54 +138,61 @@ struct JarvisOrbView: View {
 
     var stateText: String {
         switch appState.listeningState {
-        case .idle: return "Tap Start to begin"
-        case .waitingForWakeWord: return "Listening for \"JARVIS\"..."
-        case .recording: return "Tap to send"
+        case .idle: return "Tap to speak"
+        case .waitingForWakeWord: return "Say \"JARVIS\" or tap"
+        case .recording: return "Listening... tap to send"
         case .processing: return "Processing..."
         }
     }
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             ZStack {
                 Circle()
                     .fill(Color.black)
-                    .frame(width: 200, height: 200)
+                    .frame(width: 180, height: 180)
 
                 Circle()
                     .stroke(glowColor.opacity(0.3), lineWidth: 2)
-                    .frame(width: 190, height: 190)
+                    .frame(width: 170, height: 170)
                     .shadow(color: glowColor, radius: glowIntensity)
 
                 Circle()
                     .stroke(glowColor.opacity(0.6), lineWidth: 3)
-                    .frame(width: 160, height: 160)
+                    .frame(width: 140, height: 140)
                     .shadow(color: glowColor, radius: glowIntensity)
 
                 Circle()
                     .stroke(glowColor.opacity(0.8), lineWidth: 2)
-                    .frame(width: 120, height: 120)
+                    .frame(width: 105, height: 105)
                     .shadow(color: glowColor, radius: glowIntensity * 0.8)
 
                 Circle()
                     .fill(glowColor.opacity(0.15))
-                    .frame(width: 70, height: 70)
+                    .frame(width: 60, height: 60)
                     .shadow(color: glowColor, radius: glowIntensity * 0.5)
 
                 Circle()
                     .stroke(glowColor, lineWidth: 1.5)
-                    .frame(width: 70, height: 70)
+                    .frame(width: 60, height: 60)
                     .shadow(color: glowColor, radius: glowIntensity * 0.5)
 
-                Text("JARVIS")
-                    .font(.system(size: 18, weight: .bold, design: .monospaced))
-                    .foregroundColor(glowColor)
-                    .shadow(color: glowColor, radius: 6)
+                if appState.listeningState == .recording {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 22))
+                        .foregroundColor(glowColor)
+                        .shadow(color: glowColor, radius: 6)
+                } else {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundColor(glowColor)
+                        .shadow(color: glowColor, radius: 6)
+                }
 
                 if appState.listeningState == .recording {
                     Circle()
                         .stroke(glowColor.opacity(0.4), lineWidth: 1)
-                        .frame(width: 200, height: 200)
+                        .frame(width: 180, height: 180)
                         .scaleEffect(1.1)
                         .opacity(0.6)
                         .animation(
@@ -197,35 +202,62 @@ struct JarvisOrbView: View {
                 }
             }
             .onTapGesture {
-                if appState.listeningState == .recording {
+                switch appState.listeningState {
+                case .recording:
                     bridgeManager.finishRecording()
+                case .idle, .waitingForWakeWord:
+                    bridgeManager.pushToTalk()
+                case .processing:
+                    break
                 }
             }
 
             Text(stateText)
-                .font(.subheadline)
+                .font(.caption)
                 .foregroundColor(glowColor.opacity(0.8))
         }
     }
 }
 
-struct ResponseCard: View {
-    let text: String
+struct ConversationView: View {
+    @EnvironmentObject var appState: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("J.A.R.V.I.S", systemImage: "brain")
-                .font(.caption)
-                .foregroundColor(Color(red: 0.0, green: 0.85, blue: 0.9))
-            Text(text)
-                .font(.body)
-                .foregroundColor(.white)
-                .lineLimit(8)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(appState.chatMessages.suffix(10)) { msg in
+                        HStack(alignment: .top, spacing: 8) {
+                            if msg.role == .assistant {
+                                Image(systemName: "brain")
+                                    .font(.caption2)
+                                    .foregroundColor(Color(red: 0.0, green: 0.85, blue: 0.9))
+                                    .frame(width: 16)
+                            } else {
+                                Image(systemName: "person.fill")
+                                    .font(.caption2)
+                                    .foregroundColor(.gray)
+                                    .frame(width: 16)
+                            }
+                            Text(msg.text)
+                                .font(.caption)
+                                .foregroundColor(msg.role == .assistant ? .white : .gray)
+                                .lineLimit(3)
+                        }
+                        .id(msg.id)
+                    }
+                }
+                .padding(.horizontal, 8)
+            }
+            .frame(maxHeight: 120)
+            .background(Color.white.opacity(0.05))
+            .cornerRadius(10)
+            .onChange(of: appState.chatMessages.count) { _ in
+                if let last = appState.chatMessages.last {
+                    withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
+            }
         }
-        .padding()
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.08))
-        .cornerRadius(12)
     }
 }
 

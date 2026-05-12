@@ -15,6 +15,17 @@ enum ListeningState: Equatable {
     case processing
 }
 
+struct ChatMessage: Identifiable {
+    let id = UUID()
+    let role: MessageRole
+    let text: String
+    let timestamp: Date
+
+    enum MessageRole {
+        case user, assistant
+    }
+}
+
 class AppState: ObservableObject {
     @Published var bluetoothStatus: ConnectionStatus = .disconnected
     @Published var serverStatus: ConnectionStatus = .disconnected
@@ -23,10 +34,19 @@ class AppState: ObservableObject {
     @Published var lastTranscript: String = ""
     @Published var lastResponse: String = ""
     @Published var connectedDeviceName: String?
+    @Published var chatMessages: [ChatMessage] = []
 
     // HealthKit
     @Published var healthSummary: HealthSummary?
     @Published var isHealthKitAuthorized = false
+
+    func addMessage(role: ChatMessage.MessageRole, text: String) {
+        let msg = ChatMessage(role: role, text: text, timestamp: Date())
+        chatMessages.append(msg)
+        if chatMessages.count > 50 {
+            chatMessages.removeFirst(chatMessages.count - 50)
+        }
+    }
 
     @Published var serverHost: String {
         didSet { UserDefaults.standard.set(serverHost, forKey: "jarvis_server_host") }

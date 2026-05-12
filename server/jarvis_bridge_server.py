@@ -811,11 +811,40 @@ async def websocket_handler(request):
                 elif msg_type == "end_of_speech":
                     session.is_recording = False
                     logger.info("End of speech, processing...")
-                    response_text, tts_audio = await process_audio(session)
+
+                    audio_size = len(session.audio_buffer)
+                    if audio_size < 1600:
+                        resp = {"type": "response", "transcript": "I didn't catch that, sir. Could you repeat?"}
+                        await ws.send_str(json.dumps(resp))
+                        session.reset_audio()
+                        continue
+
+                    # STT first, send user_transcript so app can show what was said
+                    user_transcript = await transcribe_audio(bytes(session.audio_buffer))
+                    if user_transcript:
+                        await ws.send_str(json.dumps({
+                            "type": "user_transcript",
+                            "text": user_transcript,
+                        }))
+
+                    if not user_transcript:
+                        resp = {"type": "response", "transcript": "I couldn't understand that. Could you try again?"}
+                        await ws.send_str(json.dumps(resp))
+                        session.reset_audio()
+                        continue
+
+                    # LLM + TTS
+                    response_text = await get_jarvis_response(
+                        user_transcript, session.conversation_history, session.health_data or None
+                    )
+                    logger.info(f"Response: {response_text}")
+
                     resp: dict = {"type": "response", "transcript": response_text}
-                    if tts_audio:
-                        resp["audio"] = base64.b64encode(tts_audio).decode()
-                        resp["format"] = "wav" if tts_audio[:4] == b"RIFF" else "mp3"
+                    if response_text:
+                        tts_audio = await generate_tts(response_text)
+                        if tts_audio:
+                            resp["audio"] = base64.b64encode(tts_audio).decode()
+                            resp["format"] = "wav" if tts_audio[:4] == b"RIFF" else "mp3"
                     await ws.send_str(json.dumps(resp))
                     session.reset_audio()
                 elif msg_type == "health_data":

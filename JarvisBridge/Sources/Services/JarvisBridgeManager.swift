@@ -59,6 +59,14 @@ class JarvisBridgeManager: ObservableObject {
         audioRecording.stopRecording()
     }
 
+    func pushToTalk() {
+        guard appState?.listeningState != .recording && appState?.listeningState != .processing else { return }
+        wakeWordService.stopListening()
+        webSocket.sendStartRecording()
+        appState?.listeningState = .recording
+        startRecording()
+    }
+
     // MARK: - Private
 
     private func setupDelegates() {
@@ -115,6 +123,7 @@ extension JarvisBridgeManager: AudioRecordingDelegate {
 
     func audioRecordingDidStop() {
         appState?.listeningState = .processing
+        appState?.addMessage(role: .user, text: "🎙️ ...")
         webSocket.sendEndOfSpeech()
     }
 
@@ -133,8 +142,17 @@ extension JarvisBridgeManager: WebSocketServiceDelegate {
         appState?.serverStatus = .disconnected
     }
 
+    func webSocketDidReceiveUserTranscript(_ text: String) {
+        appState?.lastTranscript = text
+        if let messages = appState?.chatMessages, let last = messages.last, last.text == "🎙️ ..." {
+            appState?.chatMessages.removeLast()
+        }
+        appState?.addMessage(role: .user, text: text)
+    }
+
     func webSocketDidReceiveText(_ text: String) {
         appState?.lastResponse = text
+        appState?.addMessage(role: .assistant, text: text)
         appState?.listeningState = .idle
     }
 
