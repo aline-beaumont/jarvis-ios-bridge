@@ -544,10 +544,15 @@ async def get_jarvis_response(transcript: str, conversation_history: list, healt
         health_ctx = json.dumps(health_data, ensure_ascii=False)
         user_content = f"{transcript}\n\n[Current health data: {health_ctx}]"
 
+    # Use a local messages list for the multi-turn tool loop.
+    # Only save the final user text + assistant text to conversation_history.
     conversation_history.append({"role": "user", "content": user_content})
 
     if len(conversation_history) > 20:
         conversation_history[:] = conversation_history[-20:]
+
+    # Work on a copy so intermediate tool messages don't pollute history
+    messages_for_api = list(conversation_history)
 
     max_tool_rounds = 5
     final_text = ""
@@ -567,7 +572,7 @@ async def get_jarvis_response(transcript: str, conversation_history: list, healt
                     "max_tokens": 1024,
                     "system": SYSTEM_PROMPT,
                     "tools": JARVIS_TOOLS,
-                    "messages": conversation_history,
+                    "messages": messages_for_api,
                 },
                 timeout=60.0,
             )
@@ -594,11 +599,10 @@ async def get_jarvis_response(transcript: str, conversation_history: list, healt
 
             # If no tool use, we're done
             if stop_reason == "end_turn" or not tool_uses:
-                conversation_history.append({"role": "assistant", "content": content_blocks})
                 break
 
-            # Tool use: execute tools and feed results back
-            conversation_history.append({"role": "assistant", "content": content_blocks})
+            # Tool use: execute tools and feed results back (only in API messages, not history)
+            messages_for_api.append({"role": "assistant", "content": content_blocks})
 
             tool_results = []
             for tool_use in tool_uses:
@@ -616,10 +620,13 @@ async def get_jarvis_response(transcript: str, conversation_history: list, healt
                     "content": result_str[:4000],
                 })
 
-            conversation_history.append({"role": "user", "content": tool_results})
+            messages_for_api.append({"role": "user", "content": tool_results})
 
     if not final_text:
         final_text = "Done, sir."
+
+    # Save only the final text response to history (no tool_use/tool_result blocks)
+    conversation_history.append({"role": "assistant", "content": final_text})
 
     return final_text
 
