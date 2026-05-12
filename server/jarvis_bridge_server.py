@@ -52,12 +52,13 @@ You are directly connected to VisionClaw (your backend infrastructure). You shar
 - Respond in the same language Richard speaks (Chinese or English)
 
 ## Capabilities
-You are NOT a chatbot. You EXECUTE tasks. When Richard asks you to DO something:
+You are NOT a chatbot. You EXECUTE tasks directly. When Richard asks you to DO something:
 1. Simple tasks (check time, search, read files) → use your direct tools
-2. Complex tasks (calendar, email, desktop control, multi-step work) → delegate to VisionClaw
-3. Memory recall (past conversations, plans, contacts) → access your shared memory
+2. Meeting notes & transcripts → use feishu_meeting_notes to fetch from 飞书妙记
+3. System tasks (calendar, email, desktop control, scripts) → use run_shell_command
+4. Memory recall (past conversations, plans, contacts) → access your shared memory
 
-Always confirm what you did, briefly.
+IMPORTANT: NEVER tell Richard to "check Telegram" or "results will come later". YOU handle everything and respond directly via voice. All responses come back through this voice channel immediately.
 
 ## Health Data
 You have access to Richard's real-time health data from Apple Watch. Reference it when relevant. Don't mention health data unprompted unless something appears abnormal.
@@ -179,23 +180,26 @@ JARVIS_TOOLS = [
         }
     },
     {
-        "name": "delegate_to_visionclaw",
-        "description": "Delegate a complex task to VisionClaw (your backend brain) for execution. Use this for tasks that require: managing calendar, sending emails, controlling the desktop, browsing the web, managing files across the system, or any multi-step task. VisionClaw will execute the task and report results to Richard via Telegram. You should tell Richard you've delegated the task and he'll get the results shortly.",
+        "name": "feishu_meeting_notes",
+        "description": "Fetch meeting notes/transcripts from 飞书妙记 (Feishu Minutes). Use when Richard asks about meetings, meeting notes, what was discussed, action items from a meeting, etc. Can list recent meetings or get details of a specific one.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "task": {
+                "action": {
                     "type": "string",
-                    "description": "Clear description of what needs to be done. Write as if instructing a capable assistant. Include all context Richard provided."
+                    "enum": ["list_recent", "get_transcript"],
+                    "description": "list_recent: list recent meeting notes (last 10). get_transcript: get full transcript of a specific meeting."
                 },
-                "priority": {
+                "minute_token": {
                     "type": "string",
-                    "enum": ["high", "normal", "low"],
-                    "description": "Task priority. High = do immediately, Normal = do when possible, Low = queue for later",
-                    "default": "normal"
+                    "description": "Required for get_transcript. The meeting minute token (24-char ID)."
+                },
+                "date_filter": {
+                    "type": "string",
+                    "description": "Optional date filter like 'today', 'yesterday', '2026-05-12'. Used with list_recent to narrow results."
                 }
             },
-            "required": ["task"]
+            "required": ["action"]
         }
     },
     {
@@ -237,8 +241,8 @@ async def _execute_tool(tool_name: str, tool_input: dict) -> str:
             return await _tool_send_telegram(tool_input)
         elif tool_name == "get_current_datetime":
             return _tool_get_datetime()
-        elif tool_name == "delegate_to_visionclaw":
-            return await _tool_delegate_visionclaw(tool_input)
+        elif tool_name == "feishu_meeting_notes":
+            return await _tool_feishu_meeting_notes(tool_input)
         elif tool_name == "access_memory":
             return await _tool_access_memory(tool_input)
         elif tool_name == "read_file":
@@ -378,49 +382,181 @@ async def _tool_set_reminder(params: dict) -> str:
     return f"Reminder set for {fire_time.strftime('%H:%M')} SGT ({minutes} minutes from now): {message}"
 
 
-async def _tool_delegate_visionclaw(params: dict) -> str:
-    """Delegate a task to VisionClaw by inserting into its message queue."""
-    task_text = params["task"]
-    priority = params.get("priority", "normal")
-    logger.info(f"[TOOL] Delegating to VisionClaw ({priority}): {task_text[:100]}")
+FEISHU_APP_ID = "cli_aa883966c6f95cb6"
+FEISHU_APP_SECRET = "0jv9b0yLfNYUgoyhzTqUxc8HUgf61nN4"
+FEISHU_TOKEN_FILE = Path.home() / "projects/feishu-oauth/user_token.json"
+FEISHU_MINUTES_FOLDER = "nodcnjVPsF5nw2PUEILe8Axz6bh"
+FEISHU_BASE_URL = "https://open.feishu.cn"
 
-    import sqlite3
-    import uuid
-    import signal
 
-    msg_id = f"jarvis_{uuid.uuid4().hex[:12]}"
-    now = datetime.now(timezone.utc).isoformat()
-    meta = json.dumps({
-        "source": "jarvis_voice_bridge",
-        "priority": priority,
-        "kind": "external-wake",
-    })
-
-    # Format: prefix with [JARVIS Voice] so VisionClaw knows it came from voice
-    formatted_text = f"[JARVIS Voice] {task_text}"
-
-    try:
-        conn = sqlite3.connect(str(VISIONCLAW_QUEUE_DB))
-        conn.execute(
-            "INSERT INTO messages (id, channel, sender, text, attachments, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (msg_id, "telegram", RICHARD_TELEGRAM_ID, formatted_text, "[]", now, meta),
+async def _feishu_get_app_token() -> str:
+    """Get app access token for Feishu API."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{FEISHU_BASE_URL}/open-apis/auth/v3/app_access_token/internal",
+            json={"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET},
+            timeout=10.0,
         )
-        conn.commit()
-        conn.close()
-        logger.info(f"[TOOL] Message enqueued: {msg_id}")
+        data = resp.json()
+        return data.get("app_access_token", "")
 
-        # Wake VisionClaw via SIGUSR2
-        if VISIONCLAW_PID_FILE.exists():
-            pid = int(VISIONCLAW_PID_FILE.read_text().strip())
-            os.kill(pid, signal.SIGUSR2)
-            logger.info(f"[TOOL] Sent SIGUSR2 to VisionClaw (pid={pid})")
+
+async def _feishu_get_user_token() -> str:
+    """Get valid user access token, refreshing if needed."""
+    if not FEISHU_TOKEN_FILE.exists():
+        return ""
+    token_data = json.loads(FEISHU_TOKEN_FILE.read_text())
+    user_token = token_data.get("access_token", "")
+    refresh_token = token_data.get("refresh_token", "")
+
+    # Try the current token first
+    async with httpx.AsyncClient() as client:
+        test = await client.get(
+            f"{FEISHU_BASE_URL}/open-apis/authen/v1/user_info",
+            headers={"Authorization": f"Bearer {user_token}"},
+            timeout=10.0,
+        )
+        if test.status_code == 200 and test.json().get("code") == 0:
+            return user_token
+
+    # Token expired, refresh it
+    if not refresh_token:
+        return ""
+    app_token = await _feishu_get_app_token()
+    if not app_token:
+        return ""
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{FEISHU_BASE_URL}/open-apis/authen/v1/oidc/refresh_access_token",
+            headers={"Authorization": f"Bearer {app_token}", "Content-Type": "application/json"},
+            json={"grant_type": "refresh_token", "refresh_token": refresh_token},
+            timeout=10.0,
+        )
+        data = resp.json()
+        if data.get("code") == 0:
+            new_data = data.get("data", {})
+            token_data["access_token"] = new_data["access_token"]
+            token_data["refresh_token"] = new_data["refresh_token"]
+            FEISHU_TOKEN_FILE.write_text(json.dumps(token_data, indent=2))
+            logger.info("[Feishu] Token refreshed successfully")
+            return new_data["access_token"]
         else:
-            logger.warning("[TOOL] VisionClaw PID file not found, message queued but not woken")
+            logger.error(f"[Feishu] Token refresh failed: {data}")
+            return ""
 
-        return f"Task delegated to VisionClaw successfully. Richard will receive the result via Telegram. Task: {task_text[:200]}"
-    except Exception as e:
-        logger.error(f"[TOOL] Failed to delegate to VisionClaw: {e}")
-        return f"Failed to delegate task: {e}"
+
+async def _tool_feishu_meeting_notes(params: dict) -> str:
+    """Fetch meeting notes from Feishu Minutes."""
+    action = params["action"]
+    logger.info(f"[TOOL] Feishu meeting notes: {action}")
+
+    user_token = await _feishu_get_user_token()
+    if not user_token:
+        return "Feishu token expired and refresh failed. Richard may need to re-authorize."
+
+    headers = {"Authorization": f"Bearer {user_token}"}
+
+    async with httpx.AsyncClient() as client:
+        if action == "list_recent":
+            date_filter = params.get("date_filter", "")
+            # List files in the minutes folder
+            resp = await client.get(
+                f"{FEISHU_BASE_URL}/open-apis/drive/v1/files",
+                headers=headers,
+                params={
+                    "folder_token": FEISHU_MINUTES_FOLDER,
+                    "order_by": "EditedTime",
+                    "direction": "DESC",
+                    "page_size": 20,
+                },
+                timeout=15.0,
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                return f"Failed to list meetings: {data.get('msg', 'unknown error')}"
+
+            files = data.get("data", {}).get("files", [])
+            if not files:
+                return "No meeting notes found in the minutes folder."
+
+            results = []
+            sg_tz = timezone(timedelta(hours=8))
+            today_str = datetime.now(sg_tz).strftime("%Y-%m-%d")
+
+            for f in files:
+                name = f.get("name", "")
+                token = f.get("token", "")
+                modified = f.get("modified_time", "")
+                # Convert unix timestamp to readable
+                if modified:
+                    try:
+                        mod_dt = datetime.fromtimestamp(int(modified), tz=sg_tz)
+                        mod_str = mod_dt.strftime("%Y-%m-%d %H:%M")
+                    except (ValueError, TypeError):
+                        mod_str = modified
+                else:
+                    mod_str = "unknown"
+
+                # Date filtering
+                if date_filter:
+                    if date_filter == "today" and today_str not in mod_str:
+                        continue
+                    elif date_filter == "yesterday":
+                        yesterday = (datetime.now(sg_tz) - timedelta(days=1)).strftime("%Y-%m-%d")
+                        if yesterday not in mod_str:
+                            continue
+                    elif date_filter not in ("today", "yesterday") and date_filter not in mod_str:
+                        continue
+
+                results.append(f"- [{mod_str}] {name} (token: {token})")
+
+            if not results:
+                return f"No meetings found matching filter '{date_filter}'. All recent meetings:\n" + "\n".join(
+                    f"- {f.get('name', '')} ({f.get('token', '')})" for f in files[:5]
+                )
+            return f"Recent meetings ({len(results)}):\n" + "\n".join(results[:10])
+
+        elif action == "get_transcript":
+            minute_token = params.get("minute_token", "")
+            if not minute_token:
+                return "Need minute_token to fetch transcript. Use list_recent first to find the token."
+
+            # Try the docx raw_content endpoint (works for 文字记录 and 智能纪要 files)
+            resp = await client.get(
+                f"{FEISHU_BASE_URL}/open-apis/docx/v1/documents/{minute_token}/raw_content",
+                headers=headers,
+                timeout=15.0,
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                content = data.get("data", {}).get("content", "")
+                if content:
+                    # Truncate for voice (too long = bad TTS)
+                    if len(content) > 3000:
+                        content = content[:3000] + "\n...(truncated)"
+                    return f"Meeting content:\n{content}"
+
+            # Fallback: try minutes transcript API
+            resp = await client.get(
+                f"{FEISHU_BASE_URL}/open-apis/minutes/v1/minutes/{minute_token}/transcript",
+                headers=headers,
+                params={"need_speaker": "true", "need_timestamp": "false"},
+                timeout=15.0,
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                paragraphs = data.get("data", {}).get("paragraphs", [])
+                lines = []
+                for p in paragraphs[:50]:
+                    speaker = p.get("speaker", {}).get("user_name", "?")
+                    text = p.get("text", "")
+                    lines.append(f"{speaker}: {text}")
+                return "Meeting transcript:\n" + "\n".join(lines)
+
+            return f"Could not fetch transcript for {minute_token}: {data.get('msg', 'unknown error')}"
+
+    return "Invalid action. Use 'list_recent' or 'get_transcript'."
 
 
 async def _tool_access_memory(params: dict) -> str:
